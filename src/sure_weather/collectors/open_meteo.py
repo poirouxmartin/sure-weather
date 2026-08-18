@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
@@ -22,74 +22,105 @@ _FORECAST_VARS = [
     Variable.VISIBILITY,
 ]
 
-# Default model used when none is specified (best grid available free).
-DEFAULT_MODEL = "gfs_seamless"
+# NWP models served by Open-Meteo's keyless forecast API. All expose the same
+# hourly variables. More independent centers = more robust consensus.
+FORECAST_MODELS = [
+    "gfs_seamless",
+    "ecmwf_ifs025",
+    "icon_seamless",
+    "metno_seamless",
+    "arpege_seamless",
+]
+
+# Reanalysis products on the archive host, used as calibration ground truth.
+ARCHIVE_MODELS = [
+    "era5_seamless",
+    "era5_land",
+    "cerra",
+]
+
+DEFAULT_MODEL = FORECAST_MODELS[0]
+DEFAULT_ARCHIVE = ARCHIVE_MODELS[0]
+
+
+def _parse_hourly(data: dict) -> tuple[list[datetime], dict[str, list[float | None]]]:
+    """Return (times, {key: values}) where keys are '{variable}_{model}'."""
+    hourly = data["hourly"]
+    times = [
+        datetime.fromisoformat(t).replace(tzinfo=timezone.utc) for t in hourly["time"]
+    ]
+    return times, hourly
 
 
 @dataclass(frozen=True)
 class OpenMeteoCollector:
     """Zero-key collector for Open-Meteo forecast and historical data.
 
-    Open-Meteo exposes a public, keyless API with several NWP models
-    (gfs_seamless, ecmwf_ifs025, icon_seamless, metno_seamless, arpege_seamless).
+    Fetches several independent NWP models (GFS, ECMWF, ICON, MetNo, ARPEGE)
+    in a single request per cell, plus reanalysis products (era5, cerra) for
+    calibration ground truth. Each model becomes a separate provider so the
+    fusion can weight them by learned accuracy.
     """
 
     config: Config
     client: httpx.Client | None = None
 
-    def _get(self, path: str, params: dict) -> dict:
-        client = self.client or httpx.Client(timeout=30)
-        resp = client.get(f"{self.config.open_meteo_base}/{path}", params=params)
+    def _get(self, url: str, params: dict) -> dict:
+        client = self.client or httpx.Client(timeout=60)
+        resp = client.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
 
     def fetch_forecast(
         self,
         cell: Cell,
-        model: str = DEFAULT_MODEL,
+        models: list[str] | None = None,
         forecast_days: int = 7,
         past_days: int = 0,
     ) -> list[ForecastSample]:
-        """Fetch the latest forecast run for a cell. Timestamps are hourly.
+        """Fetch the latest forecast run of every model for a cell.
 
-        `past_days` requests the model's own analysis for recent past hours,
-        which is stored with issued_at == valid_at so it can be calibrated
-        against reanalysis immediately (analysis-vs-reanalysis residual).
+        Timestamps are hourly. `past_days` requests each model's own analysis
+        for recent past hours, stored with issued_at == valid_at so it can be
+        calibrated against reanalysis immediately.
         """
+        models = models or FORECAST_MODELS
         params = {
             "latitude": cell.lat,
             "longitude": cell.lon,
             "hourly": ",".join(_FORECAST_VARS),
-            "models": model,
+            "models": ",".join(models),
             "forecast_days": forecast_days,
             "timezone": "UTC",
         }
         if past_days:
             params["past_days"] = past_days
-        data = self._get("forecast", params)
-        hourly = data["hourly"]
-        times = [
-            datetime.fromisoformat(t).replace(tzinfo=timezone.utc)
-            for t in hourly["time"]
-        ]
+        data = self._get(f"{self.config.open_meteo_base}/forecast", params)
+        times, hourly = _parse_hourly(data)
         now = datetime.now(timezone.utc)
+
         samples: list[ForecastSample] = []
         for var in _FORECAST_VARS:
-            values = hourly[var]
-            for t, v in zip(times, values):
-                if v is None:
+            for model in models:
+                values = hourly.get(f"{var}_{model}")
+                if not values:
                     continue
-                issued = t if t < now else now  # past analysis: issued at valid time
-                samples.append(
-                    ForecastSample(
-                        provider=model,
-                        cell_key=cell.key,
-                        variable=var,
-                        issued_at=issued,
-                        valid_at=t,
-                        value=float(v),
+                for t, v in zip(times, values):
+                    if v is None:
+                        continue
+                    issued = (
+                        t if t < now else now
+                    )  # past analysis: issued at valid time
+                    samples.append(
+                        ForecastSample(
+                            provider=model,
+                            cell_key=cell.key,
+                            variable=var,
+                            issued_at=issued,
+                            valid_at=t,
+                            value=float(v),
+                        )
                     )
-                )
         return samples
 
     def fetch_historical(
@@ -97,48 +128,43 @@ class OpenMeteoCollector:
         cell: Cell,
         start: datetime,
         end: datetime,
-        model: str = DEFAULT_MODEL,
+        models: list[str] | None = None,
     ) -> list[Observation]:
-        """Fetch past observed/analyzed values for a cell.
+        """Fetch past reanalysis values for a cell, per model, as ground truth.
 
-        Uses the dedicated archive host, which serves reanalysis data
-        (era5_seamless by default) that can act as ground truth for
-        calibrating model bias.
+        Uses the dedicated archive host (era5_seamless, era5_land, cerra).
         """
+        models = models or ARCHIVE_MODELS
         host = self.config.open_meteo_archive_base
-        client = self.client or httpx.Client(timeout=60)
-        resp = client.get(
+        data = self._get(
             f"{host}/v1/archive",
-            params={
+            {
                 "latitude": cell.lat,
                 "longitude": cell.lon,
                 "hourly": ",".join(_FORECAST_VARS),
-                "models": model if model != DEFAULT_MODEL else "era5_seamless",
+                "models": ",".join(models),
                 "start_date": start.strftime("%Y-%m-%d"),
                 "end_date": end.strftime("%Y-%m-%d"),
                 "timezone": "UTC",
             },
         )
-        resp.raise_for_status()
-        data = resp.json()
-        hourly = data["hourly"]
-        times = [
-            datetime.fromisoformat(t).replace(tzinfo=timezone.utc)
-            for t in hourly["time"]
-        ]
+        times, hourly = _parse_hourly(data)
         obs: list[Observation] = []
         for var in _FORECAST_VARS:
-            values = hourly[var]
-            for t, v in zip(times, values):
-                if v is None:
+            for model in models:
+                values = hourly.get(f"{var}_{model}")
+                if not values:
                     continue
-                obs.append(
-                    Observation(
-                        provider="era5_seamless",
-                        cell_key=cell.key,
-                        variable=var,
-                        time=t,
-                        value=float(v),
+                for t, v in zip(times, values):
+                    if v is None:
+                        continue
+                    obs.append(
+                        Observation(
+                            provider=model,
+                            cell_key=cell.key,
+                            variable=var,
+                            time=t,
+                            value=float(v),
+                        )
                     )
-                )
         return obs

@@ -51,6 +51,7 @@ uvicorn sure_weather.api:app
 - [x] Zero-key collection (Open-Meteo forecast + era5 archive)
 - [x] Cell grid, storage, residuals, bias learning
 - [x] Robust fusion with per-provider confidence
+- [x] Multi-model providers (GFS, ECMWF, ICON, MetNo, ARPEGE) weighted by learned rmse
 - [ ] Local station providers (Netatmo / PWS / OpenWeatherMap)
 - [ ] Temporal blending (stations dominate short-term, models long-term)
 - [ ] Nowcast radar / lightning

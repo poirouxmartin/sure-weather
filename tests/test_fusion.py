@@ -102,3 +102,24 @@ def test_horizon_buckets():
     assert horizon_bucket(NOW + timedelta(hours=12), NOW) == 12.0
     assert horizon_bucket(NOW + timedelta(hours=48), NOW) == 48.0
     assert horizon_bucket(NOW + timedelta(hours=120), NOW) == 120.0
+
+
+def test_multi_model_weights_by_learned_rmse():
+    cfg = Config()
+    bucket = horizon_bucket(NOW + timedelta(hours=3), NOW)
+    good = ProviderStat("ecmwf", CELL, "temperature_2m", bucket, 100, 0.1, 0.5, NOW)
+    bad = ProviderStat("gfs", CELL, "temperature_2m", bucket, 100, 0.1, 3.0, NOW)
+    stats = {
+        ("ecmwf", CELL, "temperature_2m", bucket): good,
+        ("gfs", CELL, "temperature_2m", bucket): bad,
+    }
+    samples = [
+        _sample("ecmwf", 26.0, 3),
+        _sample("gfs", 24.0, 3),
+    ]
+    results = fuse(samples, stats, {"ecmwf": "model", "gfs": "model"}, cfg, NOW)
+    r = results[0]
+    # ecmwf (rmse 0.5) should dominate over gfs (rmse 3.0).
+    assert r.consensus > 25.5
+    weights = {p: w for p, _, w in r.contributors}
+    assert weights["ecmwf"] > weights["gfs"] * 10

@@ -9,6 +9,9 @@ from .config import Config
 from .fusion import ProviderStat, horizon_bucket
 from .models import ForecastSample, Observation, Residual, Variable
 from .storage import Storage, _parse_dt
+from .collectors.open_meteo import DEFAULT_ARCHIVE
+
+PRIMARY_ARCHIVE = DEFAULT_ARCHIVE
 
 
 def compute_residuals(
@@ -18,13 +21,17 @@ def compute_residuals(
 
     A forecast is matched to the observation that falls closest in time (within
     30 minutes) in the same cell and variable. One residual per (provider, cell,
-    variable, valid_at).
+    variable, valid_at). When several reanalysis products are present at the
+    same timestamp, the primary ground truth wins (era5_seamless), else any.
     """
-    # Index observations by (cell, variable, rounded time).
+    # Index observations by (cell, variable, rounded time), preferring the
+    # primary reanalysis product.
     obs_index: dict[tuple[str, str, datetime], Observation] = {}
     for o in observations:
         rounded = o.time.replace(minute=0, second=0, microsecond=0)
-        obs_index[(o.cell_key, o.variable, rounded)] = o
+        key = (o.cell_key, o.variable, rounded)
+        if key not in obs_index or o.provider == PRIMARY_ARCHIVE:
+            obs_index[key] = o
 
     residuals: list[Residual] = []
     for f in forecasts:
@@ -83,9 +90,7 @@ def learn_stats(residuals: list[Residual]) -> list[ProviderStat]:
 
 def calibration_due(storage: Storage, config: Config) -> bool:
     """True if no calibration has been done in the last interval."""
-    row = storage._conn.execute(
-        "SELECT MAX(valid_at) FROM residuals WHERE provider = 'gfs_seamless'"
-    ).fetchone()
+    row = storage._conn.execute("SELECT MAX(valid_at) FROM residuals").fetchone()
     if row is None or row[0] is None:
         return True
     latest = _parse_dt(row[0])

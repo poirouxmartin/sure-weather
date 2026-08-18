@@ -5,14 +5,12 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .calibration import compute_residuals
-from .collectors import OpenMeteoCollector
+from .collectors import ARCHIVE_MODELS, FORECAST_MODELS, OpenMeteoCollector
 from .config import load_config
 from .grid import cells_in_bbox, cell_from_point
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Provider
 from .storage import Storage
 from .service import WeatherService
-
-DEFAULT_MODEL = "gfs_seamless"
 
 
 def _parse_point(text: str) -> tuple[float, float]:
@@ -27,7 +25,8 @@ def cmd_collect(args: argparse.Namespace) -> None:
     config = load_config()
     storage = Storage(config.db_path)
     collector = OpenMeteoCollector(config)
-    storage.upsert_provider(Provider(name=DEFAULT_MODEL, kind="model"))
+    for m in FORECAST_MODELS:
+        storage.upsert_provider(Provider(name=m, kind="model"))
 
     lat, lon = _parse_point(args.point)
     if args.bbox:
@@ -43,7 +42,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     total = 0
     for c in cells:
         samples = collector.fetch_forecast(
-            c, model=DEFAULT_MODEL, forecast_days=args.days, past_days=args.past_days
+            c, forecast_days=args.days, past_days=args.past_days
         )
         total += storage.insert_forecasts(samples)
         print(f"cell {c.key}: {len(samples)} samples")
@@ -55,7 +54,8 @@ def cmd_observe(args: argparse.Namespace) -> None:
     config = load_config()
     storage = Storage(config.db_path)
     collector = OpenMeteoCollector(config)
-    storage.upsert_provider(Provider(name=DEFAULT_MODEL, kind="model"))
+    for m in ARCHIVE_MODELS:
+        storage.upsert_provider(Provider(name=m, kind="model"))
 
     lat, lon = _parse_point(args.point)
     cells = [cell_from_point(lat, lon, config)]
@@ -65,7 +65,7 @@ def cmd_observe(args: argparse.Namespace) -> None:
     start = end - timedelta(days=args.days)
     total = 0
     for c in cells:
-        obs = collector.fetch_historical(c, start, end, model=DEFAULT_MODEL)
+        obs = collector.fetch_historical(c, start, end)
         total += storage.insert_observations(obs)
         print(f"cell {c.key}: {len(obs)} observations")
     print(f"inserted {total} observations")
