@@ -91,6 +91,7 @@ class OpenMeteoCollector:
             "hourly": ",".join(_FORECAST_VARS),
             "models": ",".join(models),
             "forecast_days": forecast_days,
+            "wind_speed_unit": "ms",
             "timezone": "UTC",
         }
         if past_days:
@@ -145,6 +146,7 @@ class OpenMeteoCollector:
                 "models": ",".join(models),
                 "start_date": start.strftime("%Y-%m-%d"),
                 "end_date": end.strftime("%Y-%m-%d"),
+                "wind_speed_unit": "ms",
                 "timezone": "UTC",
             },
         )

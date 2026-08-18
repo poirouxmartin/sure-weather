@@ -60,6 +60,7 @@ class WeatherService:
                     "valid_at": r.valid_at.isoformat(),
                     "value": round(r.consensus, 2),
                     "confidence": round(r.confidence, 3),
+                    "calibrated": r.calibrated,
                     "dispersion": round(r.dispersion, 3),
                     "bias_corrected": r.bias_corrected,
                     "contributors": [p for p, _, _ in r.contributors],

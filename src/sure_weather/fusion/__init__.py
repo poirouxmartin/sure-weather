@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,6 +11,26 @@ from ..models import ForecastSample
 
 # Baseline weight per provider kind when no residual history exists yet.
 _KIND_BASE_WEIGHT = {"model": 1.0, "station": 2.0}
+
+# Prior rmse used when a provider has no learned stats yet, per kind.
+_KIND_PRIOR_RMSE = {"model": 2.0, "station": 1.0}
+
+# Tolerance per variable: the fused value is considered "right" when it is
+# within +/- tolerance of the true value. This makes confidence a calibrated
+# probability (error within tolerance), not an arbitrary score.
+# Values are chosen as meteorologically defensible "acceptable error" bounds.
+_VARIABLE_TOLERANCE = {
+    "temperature_2m": 1.5,
+    "dew_point_2m": 2.5,
+    "relative_humidity_2m": 10.0,
+    "precipitation": 0.5,
+    "precipitation_probability": 20.0,
+    "cloud_cover": 20.0,
+    "wind_speed_10m": 2.0,
+    "wind_gusts_10m": 3.0,
+    "pressure_msl": 2.0,
+    "visibility": 5.0,
+}
 
 
 @dataclass(frozen=True)
@@ -69,7 +90,8 @@ class FusionResult:
     consensus: float  # weighted, bias-corrected value
     bias_corrected: bool
     dispersion: float  # spread of providers around consensus (IQR or MAD)
-    confidence: float  # 0..1 composite score
+    confidence: float  # 0..1 calibrated probability, error within tolerance
+    calibrated: bool  # False when no provider has learned stats (no ground truth)
     contributors: tuple[tuple[str, float, float], ...]  # (provider, raw_value, weight)
 
 
@@ -155,16 +177,40 @@ def _fuse_one(
     )
     residual_spread = residual_spread or float(np.std(corrected_arr)) or 0.0
 
-    # Composite confidence 0..1.
-    # - absolute spread: smaller residual spread -> higher confidence
-    scale = _per_variable_scale(variable)
-    spread_score = np.clip(1.0 - residual_spread / (2.0 * scale), 0.05, 1.0)
-    # - agreement: more agreeing providers -> higher confidence
-    agreement = min(1.0, len(pairs) / 4.0)
-    # - coverage of provider kinds: station+model is better than model alone
-    kinds_used = {kinds.get(p, "model") for p, _, _ in pairs}
-    kind_score = 1.0 if "station" in kinds_used else 0.8
-    confidence = float(spread_score * 0.6 + agreement * 0.3 + kind_score * 0.1)
+    # Calibrated confidence: probability that the fused value is within
+    # +/- tolerance of the truth, assuming a normal error distribution.
+    #   sigma_learned: inverse-variance propagation of each provider's noise.
+    #   sigma_instant: observed disagreement among providers right now.
+    # The provider noise is the residual spread around its own bias
+    # (sqrt(rmse^2 - bias^2)): the systematic part was already removed by the
+    # bias correction, so it must not count twice.
+    variances: list[float] = []
+    for provider, _v, _w in pairs:
+        bucket = horizon_bucket(valid_at, samples[0].issued_at)
+        stat = stats.get((provider, cell_key, variable, bucket))
+        if stat and stat.samples >= 3:
+            noise = math.sqrt(max(stat.rmse * stat.rmse - stat.bias * stat.bias, 0.0))
+            noise = max(noise, 1e-6)
+        else:
+            noise = _KIND_PRIOR_RMSE.get(kinds.get(provider, "model"), 2.0)
+        variances.append(noise * noise)
+    sigma_learned = 1.0 / math.sqrt(sum(1.0 / v for v in variances))
+    # Weighted mean absolute deviation ~ 0.8 * sigma for a normal distribution.
+    sigma_instant = residual_spread / 0.8
+    sigma_total = math.sqrt(sigma_learned**2 + sigma_instant**2)
+    tolerance = _VARIABLE_TOLERANCE.get(variable, 1.5)
+    # P(|N(0, sigma)| <= tol) = erf(tol / (sigma * sqrt(2))).
+    confidence = float(math.erf(tolerance / (sigma_total * math.sqrt(2.0))))
+
+    # Calibrated only if at least one provider has learned stats for this
+    # (cell, variable, horizon). Without ground truth, confidence is a prior.
+    bucket = horizon_bucket(valid_at, samples[0].issued_at)
+    any_learned = False
+    for provider, _, _ in pairs:
+        s = stats.get((provider, cell_key, variable, bucket))
+        if s is not None and s.samples >= 3:
+            any_learned = True
+            break
 
     return FusionResult(
         variable=variable,
@@ -173,24 +219,9 @@ def _fuse_one(
         bias_corrected=any_corrected,
         dispersion=residual_spread,
         confidence=confidence,
+        calibrated=any_learned,
         contributors=tuple((p, v, w) for (p, v, w) in pairs),
     )
-
-
-def _per_variable_scale(variable: str) -> float:
-    """Typical scale of the variable, used to normalize dispersion into 0..1."""
-    return {
-        "temperature_2m": 2.0,
-        "dew_point_2m": 2.0,
-        "relative_humidity_2m": 10.0,
-        "precipitation": 0.5,
-        "precipitation_probability": 15.0,
-        "cloud_cover": 15.0,
-        "wind_speed_10m": 2.0,
-        "wind_gusts_10m": 3.0,
-        "pressure_msl": 1.5,
-        "visibility": 5.0,
-    }.get(variable, 2.0)
 
 
 def fuse(
