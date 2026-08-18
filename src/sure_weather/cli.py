@@ -108,6 +108,80 @@ def cmd_forecast(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_backfill(args: argparse.Namespace) -> None:
+    """Backfill a cell: 92 days of model analysis + archive, then calibrate.
+
+    Gives ~3 months of residuals per cell, the maximum Open-Meteo exposes for
+    past model analysis. This makes learned bias/rmse statistically solid.
+    """
+    config = load_config()
+    storage = Storage(config.db_path)
+    collector = OpenMeteoCollector(config)
+    for m in FORECAST_MODELS + ARCHIVE_MODELS:
+        storage.upsert_provider(Provider(name=m, kind="model"))
+
+    lat, lon = _parse_point(args.point)
+    cells = [cell_from_point(lat, lon, config)]
+    storage.upsert_cells((c.key, c.lat, c.lon) for c in cells)
+    c = cells[0]
+
+    print("fetching 92d of model analysis...")
+    samples = collector.fetch_forecast(c, forecast_days=1, past_days=92)
+    storage.insert_forecasts(samples)
+    print(f"  {len(samples)} forecast samples")
+
+    print("fetching 92d of reanalysis...")
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=92)
+    obs = collector.fetch_historical(c, start, end)
+    storage.insert_observations(obs)
+    print(f"  {len(obs)} observations")
+
+    print("calibrating...")
+    cells_all = [
+        r[0]
+        for r in storage._conn.execute(
+            "SELECT DISTINCT cell_key FROM forecasts"
+        ).fetchall()
+    ]
+    forecasts = storage.forecasts_in_window(cells_all, list(ALL_VARIABLES), start, end)
+    observations = storage.observations_in_window(
+        cells_all, list(OBSERVABLE_VARIABLES), start, end
+    )
+    residuals = compute_residuals(forecasts, observations)
+    n = storage.insert_residuals(residuals)
+    print(f"  {n} residuals")
+    print(f"cell {c.key} backfilled")
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """Replay fusion on past data and compare empirical hit rate to confidence."""
+    config = load_config()
+    storage = Storage(config.db_path)
+    lat, lon = _parse_point(args.point)
+    cell = cell_from_point(lat, lon, config)
+
+    from .verify import report_by_variable, verify
+
+    print("== reliability by confidence band (out-of-sample) ==")
+    rep = verify(storage, config, cell.key, split_ratio=args.split)
+    for b in rep["bands"]:
+        print(
+            f"band {b['band']:<12} n={b['n']:<4} "
+            f"conf={b['avg_confidence']:.3f} empirical={b['empirical_rate']:.3f} "
+            f"gap={b['gap']:+.3f}"
+        )
+
+    print("\n== per variable ==")
+    for var, s in report_by_variable(
+        storage, config, cell.key, split_ratio=args.split
+    ).items():
+        print(
+            f"{var:<28} n={s['n']:<4} conf={s['avg_confidence']:.3f} "
+            f"empirical={s['empirical_rate']:.3f} gap={s['gap']:+.3f}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sure-weather")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -140,6 +214,26 @@ def main() -> None:
     p_fc.add_argument("point", help="lat,lon")
     p_fc.add_argument("--hours", type=int, default=48)
     p_fc.set_defaults(func=cmd_forecast)
+
+    p_verify = sub.add_parser(
+        "verify",
+        help="replay fusion on past data, compare empirical hit rate to confidence",
+    )
+    p_verify.add_argument("point", help="lat,lon")
+    p_verify.add_argument(
+        "--split",
+        type=float,
+        default=0.7,
+        help="train/validate split ratio (default 0.7)",
+    )
+    p_verify.set_defaults(func=cmd_verify)
+
+    p_backfill = sub.add_parser(
+        "backfill",
+        help="fetch 92d of model analysis + reanalysis for a cell, then calibrate",
+    )
+    p_backfill.add_argument("point", help="lat,lon")
+    p_backfill.set_defaults(func=cmd_backfill)
 
     args = parser.parse_args()
     args.func(args)
