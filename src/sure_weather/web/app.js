@@ -1,4 +1,4 @@
-/* Sure Weather PWA — vanilla JS. No build step. */
+/* Sure Weather PWA — vanilla JS, no build step. */
 "use strict";
 
 if ("serviceWorker" in navigator) {
@@ -44,45 +44,60 @@ const VAR_ORDER = [
   "visibility",
 ];
 
-const conf = (x) => document.getElementById(x);
-
 let state = { lat: 48.8566, lon: 2.3522, hours: 24, name: "Paris" };
 let reqToken = 0;
 
-const $ = (sel) => document.querySelector(sel);
+const $ = (s) => document.querySelector(s);
+const el = (id) => document.getElementById(id);
+const hide = (n) => (n.hidden = true);
+const show = (n) => (n.hidden = false);
 
 function fmtTime(iso) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
-
 function fmtDay(iso) {
-  return new Date(iso).toLocaleDateString("fr-FR", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
+  return new Date(iso).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
 }
-
 function round(v, d = 1) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   return v.toFixed(d);
 }
 
-function confBadge(c, cal) {
-  const val = cal ? c : null;
-  let cls = "sn-badge--gray";
-  let txt = "non calibrée";
-  if (val !== null) {
-    if (val >= 0.99) { cls = "sn-badge--green"; txt = "≈99%"; }
-    else if (val >= 0.95) { cls = "sn-badge--teal"; txt = "95–99%"; }
-    else if (val >= 0.9) { cls = "sn-badge--yellow"; txt = "90–95%"; }
-    else { cls = "sn-badge--red"; txt = "<90%"; }
-  }
-  return `<span class="sn-badge ${cls}" title="Confiance calibrée">${txt}</span>`;
+function isNight(iso) {
+  const h = new Date(iso).getHours();
+  return h < 6 || h >= 21;
 }
 
-/* ---- Geo location / search ---- */
+/* Rough weather icon + sky key from available variables. */
+function weatherKey(row) {
+  const cloud = row.cloud_cover?.value ?? 0;
+  const rain = row.precipitation?.value ?? 0;
+  const prob = row.precipitation_probability?.value ?? 0;
+  if (rain > 5) return { icon: "⛈", sky: "storm" };
+  if (rain > 0.3 || prob > 70) return { icon: "🌧", sky: "rain" };
+  if (cloud >= 70) return { icon: "☁️", sky: isNight(row.time) ? "night" : "partly" };
+  if (cloud >= 30) return { icon: "⛅", sky: isNight(row.time) ? "night" : "partly" };
+  return { icon: isNight(row.time) ? "🌙" : "☀️", sky: isNight(row.time) ? "night" : "day" };
+}
+
+function confBadge(c, calibrated) {
+  if (!calibrated || c === null || c === undefined) {
+    return `<span class="hour__conf hour__conf--na">non cal.</span>`;
+  }
+  if (c >= 0.99) return `<span class="hour__conf hour__conf--hi">99%+</span>`;
+  if (c >= 0.95) return `<span class="hour__conf hour__conf--hi">95%+</span>`;
+  if (c >= 0.9) return `<span class="hour__conf hour__conf--mid">90%+</span>`;
+  return `<span class="hour__conf hour__conf--lo"><90%</span>`;
+}
+
+function confColor(c) {
+  if (c >= 0.99) return "#0f9d58";
+  if (c >= 0.95) return "#2b6df6";
+  if (c >= 0.9) return "#d97706";
+  return "#dc2626";
+}
+
+/* ---- Geo ---- */
 
 async function geocode(query) {
   if (query.includes(",")) {
@@ -96,152 +111,204 @@ async function geocode(query) {
   const d = await r.json();
   if (!d.results || !d.results.length) throw new Error("Ville introuvable");
   const res = d.results[0];
-  return {
-    lat: res.latitude,
-    lon: res.longitude,
-    name: res.name + (res.country ? `, ${res.country}` : ""),
-  };
+  return { lat: res.latitude, lon: res.longitude, name: res.name + (res.country ? `, ${res.country}` : "") };
 }
 
-async function locateMe() {
+function locateMe() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error("Géolocalisation non supportée"));
     navigator.geolocation.getCurrentPosition(
-      (pos) =>
-        resolve({
-          lat: pos.coords.latitude,
-          lon: pos.coords.longitude,
-          name: "Ma position",
-        }),
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, name: "Ma position" }),
       (err) => reject(new Error(`Géolocalisation refusée (${err.code})`)),
       { timeout: 10000 }
     );
   });
 }
 
-/* ---- Data fetching ---- */
+/* ---- Load ---- */
 
 async function loadForecast() {
   const token = ++reqToken;
-  showLoading(true);
-  hide(conf("error"));
+  show(el("loading"));
+  hide(el("error"));
   try {
-    const url = `/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`;
-    const r = await fetch(url);
+    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`);
     if (!r.ok) throw new Error(`API ${r.status}`);
     const data = await r.json();
-    if (token !== reqToken) return; // a newer request superseded this one
+    if (token !== reqToken) return;
     if (!data.forecast || !data.forecast.length) {
-      showLoading(false);
-      conf("content").hidden = true;
-      conf("empty").hidden = false;
+      hide(el("loading"));
+      hide(el("content"));
+      show(el("empty"));
       return;
     }
     render(data);
   } catch (e) {
     if (token !== reqToken) return;
-    showLoading(false);
-    conf("content").hidden = true;
-    conf("empty").hidden = true;
-    conf("error").hidden = false;
-    conf("error-text").textContent = e.message;
+    hide(el("loading"));
+    hide(el("content"));
+    show(el("error"));
+    el("error").textContent = e.message;
   }
 }
 
-/* ---- Rendering ---- */
+/* ---- Render ---- */
 
 function render(data) {
-  showLoading(false);
-  conf("empty").hidden = true;
-  conf("content").hidden = false;
+  hide(el("loading"));
+  hide(el("empty"));
+  show(el("content"));
 
   const fc = data.forecast;
   const byTime = {};
-  for (const item of fc) {
-    (byTime[item.valid_at] = byTime[item.valid_at] || {})[item.variable] = item;
-  }
+  for (const item of fc) (byTime[item.valid_at] = byTime[item.valid_at] || {})[item.variable] = item;
   const times = Object.keys(byTime).sort();
 
-  conf("loc-name").textContent = state.name;
-  const cell = data.cell;
-  conf("loc-meta").textContent = `cellule ${cell} · généré à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
+  el("loc-name").textContent = state.name;
+  el("loc-meta").textContent = `cellule ${data.cell} · mis à jour à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
+  el("footer-note").textContent = `Fusion de 5 centres météo · correction de biais par cellule · source ${data.cell}`;
 
-  /* Horizon cards: first N hours (up to 12) */
-  const horizon = conf("horizon");
-  horizon.innerHTML = "";
-  for (const t of times.slice(0, 12)) {
+  /* Hero: current conditions */
+  const nowRow = byTime[times[0]] || {};
+  const wk = weatherKey({ ...nowRow, time: times[0] });
+  el("sky-icon").textContent = wk.icon;
+  document.body.dataset.sky = wk.sky;
+  const t = nowRow.temperature_2m;
+  el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
+  el("now-feels").textContent = t ? `Ressenti ${round(t.value - 0)}°` : "";
+  const det = [];
+  if (nowRow.wind_speed_10m) det.push(`Vent ${round(nowRow.wind_speed_10m.value)} m/s`);
+  if (nowRow.relative_humidity_2m) det.push(`Humidité ${round(nowRow.relative_humidity_2m.value, 0)}%`);
+  if (nowRow.pressure_msl) det.push(`${round(nowRow.pressure_msl.value, 0)} hPa`);
+  if (nowRow.precipitation) det.push(`Pluie ${round(nowRow.precipitation.value, 2)} mm`);
+  el("now-details").innerHTML = det.map((d) => `<span>${d}</span>`).join("");
+  const rainSum = fc.filter((i) => i.variable === "precipitation").reduce((a, i) => a + (i.value || 0), 0);
+  const maxT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.max(a, i.value), -99);
+  const minT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.min(a, i.value), 99);
+  el("loc-summary").textContent =
+    `${wk.icon} ${fc.length > 0 ? `Max ${round(maxT)}° / Min ${round(minT)}°` : ""}` +
+    (rainSum > 0.1 ? ` · ${round(rainSum, 1)} mm sur la période` : "");
+
+  /* Timeline */
+  renderTimeline(times, byTime);
+
+  /* Hourly cards */
+  renderHours(times, byTime);
+
+  /* Confidence per variable */
+  renderConfidence(fc);
+
+  /* Table */
+  renderTable(times, byTime);
+}
+
+function renderTimeline(times, byTime) {
+  const chart = el("timeline-chart");
+  chart.innerHTML = "";
+  const temps = times.map((t) => byTime[t].temperature_2m?.value ?? null).filter((v) => v !== null);
+  const min = Math.min(...temps, -99);
+  const max = Math.max(...temps, 99);
+  const span = Math.max(max - min, 1);
+  let avgConf = null;
+  const confs = times.map((t) => byTime[t].temperature_2m?.confidence).filter((c) => c !== null);
+  if (confs.length) avgConf = confs.reduce((a, b) => a + b, 0) / confs.length;
+
+  for (const t of times) {
     const row = byTime[t];
-    const temp = row.temperature_2m;
-    const precip = row.precipitation;
-    const wind = row.wind_speed_10m;
-    const confs = VAR_ORDER.filter((v) => row[v]).map((v) => row[v].confidence);
-    const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
-    const isDay = new Date(t).getHours() >= 6 && new Date(t).getHours() < 21;
-    const card = document.createElement("div");
-    card.className = "sw-hour" + (isDay ? "" : " sw-hour--night");
-    card.innerHTML = `
-      <div class="sw-hour__time">${fmtDay(t)}<br/>${fmtTime(t)}</div>
-      <div class="sw-hour__temp">${temp ? round(temp.value) + "°" : "—"}</div>
-      <div class="sw-hour__extra">
-        ${precip && precip.value > 0.1 ? `<span>💧 ${round(precip.value, 2)}mm</span>` : ""}
-        ${wind ? `<span>🌬 ${round(wind.value)}</span>` : ""}
+    const v = row.temperature_2m?.value;
+    if (v === null || v === undefined) continue;
+    const pct = ((v - min) / span) * 100;
+    const cls = v < 10 ? "tl-bar--cold" : v < 25 ? "tl-bar--mild" : "tl-bar--hot";
+    const col = document.createElement("div");
+    col.className = "tl-col";
+    col.innerHTML = `
+      <div class="tl-bar ${cls}" style="height:${Math.max(pct, 3)}%">
+        <span class="tl-bar__temp">${round(v)}°</span>
       </div>
-      <div class="sw-hour__conf">${confBadge(avgConf, row.temperature_2m?.calibrated)}</div>
-    `;
-    horizon.appendChild(card);
+      <span class="tl-time">${fmtTime(t)}</span>`;
+    chart.appendChild(col);
   }
+  if (avgConf !== null) {
+    el("timeline-badge").textContent = `confiance moyenne ${Math.round(avgConf * 100)}%`;
+    el("timeline-badge").style.background = `rgba(15,157,88,.12)`;
+    el("timeline-badge").style.color = avgConf >= 0.95 ? "#0f9d58" : avgConf >= 0.9 ? "#d97706" : "#dc2626";
+  } else {
+    el("timeline-badge").textContent = "non calibrée";
+  }
+}
 
-  /* Per-variable confidence, averaged over the window */
-  const varsEl = conf("vars");
-  varsEl.innerHTML = "";
+function renderHours(times, byTime) {
+  const wrap = el("hours");
+  wrap.innerHTML = "";
+  for (const t of times) {
+    const row = byTime[t] || {};
+    const wk = weatherKey({ ...row, time: t });
+    const temp = row.temperature_2m;
+    const rain = row.precipitation;
+    const wind = row.wind_speed_10m;
+    const confs = VAR_ORDER.filter((v) => row[v] && row[v].calibrated).map((v) => row[v].confidence);
+    const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
+    const cal = !!(row.temperature_2m && row.temperature_2m.calibrated);
+    const card = document.createElement("div");
+    card.className = "hour";
+    card.innerHTML = `
+      <div class="hour__time">${fmtTime(t)}</div>
+      <div class="hour__day">${fmtDay(t)}</div>
+      <div class="hour__ic">${wk.icon}</div>
+      <div class="hour__temp">${temp ? round(temp.value) + "°" : "—"}</div>
+      <div class="hour__row">${rain && rain.value > 0.05 ? `💧 ${round(rain.value, 1)} mm` : ""}</div>
+      <div class="hour__row">${wind ? `🌬 ${round(wind.value)} m/s` : ""}</div>
+      ${confBadge(avgConf, cal)}`;
+    wrap.appendChild(card);
+  }
+}
+
+function renderConfidence(fc) {
+  const wrap = el("vars");
+  wrap.innerHTML = "";
+  const overall = [];
   for (const v of VAR_ORDER) {
     const items = fc.filter((i) => i.variable === v && i.calibrated);
     if (!items.length) continue;
     const avg = items.reduce((a, i) => a + i.confidence, 0) / items.length;
     const pct = Math.round(avg * 100);
-    const color = pct >= 99 ? "#00875a" : pct >= 95 ? "#00afbf" : pct >= 90 ? "#b86e00" : "#de350b";
+    overall.push(pct);
+    const color = confColor(avg);
     const div = document.createElement("div");
-    div.className = "sw-var";
+    div.className = "var";
     div.innerHTML = `
-      <div class="sw-var__head">
-        <span class="sw-var__label">${VAR_LABELS[v] || v}</span>
-        <span class="sw-var__value" style="color:${color}">${pct}%</span>
+      <div class="var__head">
+        <span class="var__label">${VAR_LABELS[v] || v}</span>
+        <span class="var__value" style="color:${color}">${pct}%</span>
       </div>
-      <div class="sn-progress sn-progress--sm sw-var__bar">
-        <div class="sn-progress__bar" style="width:${pct}%; background:${color}"></div>
-      </div>
-    `;
-    varsEl.appendChild(div);
+      <div class="var__track">
+        <div class="var__bar" style="width:${pct}%; background:${color}"></div>
+      </div>`;
+    wrap.appendChild(div);
   }
+  if (overall.length) {
+    const m = Math.round(overall.reduce((a, b) => a + b, 0) / overall.length);
+    el("conf-overall").textContent = `moyenne ${m}%`;
+  }
+}
 
-  /* Hourly table */
-  const tb = conf("table-body");
+function renderTable(times, byTime) {
+  const tb = el("table-body");
   tb.innerHTML = "";
   for (const t of times) {
-    const row = byTime[t];
-    const confs = VAR_ORDER.filter((v) => row[v]).map((v) => row[v].confidence);
-    const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
+    const row = byTime[t] || {};
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${fmtTime(t)}</td>
       <td>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
-      <td>${row.precipitation ? round(row.precipitation.value, 2) + "mm" : "—"}</td>
+      <td>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
+      <td>${row.precipitation ? round(row.precipitation.value, 2) + " mm" : "—"}</td>
       <td>${row.wind_speed_10m ? round(row.wind_speed_10m.value) + " m/s" : "—"}</td>
       <td>${row.relative_humidity_2m ? round(row.relative_humidity_2m.value, 0) + "%" : "—"}</td>
       <td>${row.cloud_cover ? round(row.cloud_cover.value, 0) + "%" : "—"}</td>
-      <td>${confBadge(avgConf, row.temperature_2m?.calibrated)}</td>
-    `;
+      <td>${row.pressure_msl ? round(row.pressure_msl.value, 0) + " hPa" : "—"}</td>`;
     tb.appendChild(tr);
   }
-}
-
-/* ---- UI helpers ---- */
-
-function showLoading(on) {
-  conf("loading").hidden = !on;
-}
-function hide(el) {
-  el.hidden = true;
 }
 
 /* ---- Events ---- */
@@ -257,8 +324,8 @@ $("#search-form").addEventListener("submit", async (e) => {
     state.name = loc.name;
     await loadForecast();
   } catch (err) {
-    conf("error").hidden = false;
-    conf("error-text").textContent = err.message;
+    show(el("error"));
+    el("error").textContent = err.message;
   }
 });
 
@@ -270,16 +337,16 @@ $("#locate-btn").addEventListener("click", async () => {
     state.name = loc.name;
     await loadForecast();
   } catch (err) {
-    conf("error").hidden = false;
-    conf("error-text").textContent = err.message;
+    show(el("error"));
+    el("error").textContent = err.message;
   }
 });
 
 $("#range-seg").addEventListener("click", (e) => {
-  const btn = e.target.closest(".sn-seg__btn");
+  const btn = e.target.closest(".seg__btn");
   if (!btn) return;
-  document.querySelectorAll(".sn-seg__btn").forEach((b) => b.classList.remove("sn-seg__btn--active"));
-  btn.classList.add("sn-seg__btn--active");
+  document.querySelectorAll(".seg__btn").forEach((b) => b.classList.remove("seg__btn--active"));
+  btn.classList.add("seg__btn--active");
   state.hours = parseInt(btn.dataset.hours, 10);
   loadForecast();
 });

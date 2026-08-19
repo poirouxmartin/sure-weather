@@ -4,8 +4,8 @@
   "description": "Prévisions météo multi-sources avec confiance calibrée par variable.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f5f7fa",
-  "theme_color": "#00afbf",
+  "background_color": "#eef2f7",
+  "theme_color": "#1b2a4a",
   "icons": [
     {
       "src": "/static/icon.svg",

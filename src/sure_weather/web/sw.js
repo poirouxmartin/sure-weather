@@ -1,5 +1,5 @@
-const CACHE = "sure-weather-v1";
-const APP_SHELL = ["/", "/static/setics-ui.css", "/static/app.js", "/static/icon.svg"];
+const CACHE = "sure-weather-v2";
+const APP_SHELL = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(

@@ -3,79 +3,108 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#00afbf" />
+  <meta name="theme-color" content="#1b2a4a" />
   <meta name="description" content="Prévisions météo multi-sources avec confiance calibrée par variable." />
   <title>Sure Weather</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/setics-ui.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
-<body>
-  <div class="sw-app">
-    <header class="sw-header">
-      <div class="sw-brand">
-        <div class="sw-brand__logo">
-          <svg viewBox="0 0 96 96" width="22" height="22" aria-hidden="true">
-            <path d="M24 44h32a12 12 0 0 1 0 24H36" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
-            <path d="M32 40c0-10 8-18 18-18s18 8 18 18c0 6-3 11-8 14" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <span class="sw-brand__name">Sure Weather</span>
+<body data-sky="day">
+  <div class="app" id="app">
+    <!-- Header -->
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__logo" aria-hidden="true">☀</span>
+        <span class="topbar__name">Sure Weather</span>
       </div>
-      <form class="sw-search" id="search-form" autocomplete="off">
-        <input class="sn-input sw-search__input" id="search-input" type="search"
-               placeholder="Ville ou coordonnées (lat, lon)…" />
-        <button class="sn-btn sn-btn--primary sn-btn--sm" type="submit">Chercher</button>
-      </form>
-      <button class="sn-btn sn-btn--ghost sn-btn--sm" id="locate-btn" type="button">📍 Me localiser</button>
+      <div class="topbar__actions">
+        <button class="btn btn--ghost" id="locate-btn" type="button" title="Me localiser">
+          <span class="ic">📍</span>
+        </button>
+        <form class="search" id="search-form" autocomplete="off">
+          <input class="search__input" id="search-input" type="search"
+                 placeholder="Ville, ou lat, lon…" />
+          <button class="btn btn--primary" type="submit">Rechercher</button>
+        </form>
+      </div>
     </header>
 
-    <div class="sn-loading sw-loading" id="loading"><span class="sn-spin">⟳</span> Chargement…</div>
-    <div class="sn-empty sw-empty" id="empty" hidden>Aucune prévision disponible pour ce point.</div>
-    <div class="sn-banner sn-banner--error sw-error" id="error" hidden>
-      <div class="sn-banner__body">
-        <div class="sn-banner__title" id="error-title">Erreur</div>
-        <div class="sn-banner__text" id="error-text"></div>
-      </div>
+    <!-- Loading / errors -->
+    <div class="loading" id="loading" hidden>
+      <div class="spinner"></div>
+      <span>Calcul de la confiance…</span>
     </div>
+    <div class="error" id="error" hidden></div>
+    <div class="empty" id="empty" hidden>Aucune prévision disponible pour ce point.</div>
 
+    <!-- Main content -->
     <main id="content" hidden>
-      <section class="sw-location">
-        <div class="sw-location__name" id="loc-name">—</div>
-        <div class="sw-location__meta" id="loc-meta"></div>
+      <!-- Location -->
+      <section class="hero">
+        <div class="hero__sky" id="sky-icon" aria-hidden="true">☀️</div>
+        <div>
+          <h1 class="hero__name" id="loc-name">—</h1>
+          <p class="hero__meta" id="loc-meta"></p>
+          <p class="hero__summary" id="loc-summary"></p>
+        </div>
+        <div class="hero__now">
+          <div class="hero__temp" id="now-temp">—°</div>
+          <div class="hero__feels" id="now-feels"></div>
+          <div class="hero__details" id="now-details"></div>
+        </div>
       </section>
 
-      <div class="sn-seg sw-seg" id="range-seg">
-        <button class="sn-seg__btn sn-seg__btn--active" data-hours="24">24 h</button>
-        <button class="sn-seg__btn" data-hours="72">72 h</button>
-        <button class="sn-seg__btn" data-hours="168">7 j</button>
+      <!-- Range selector -->
+      <div class="seg" id="range-seg">
+        <button class="seg__btn seg__btn--active" data-hours="24">24 h</button>
+        <button class="seg__btn" data-hours="72">72 h</button>
+        <button class="seg__btn" data-hours="168">7 jours</button>
       </div>
 
-      <div class="sw-horizon" id="horizon"></div>
-
-      <section class="sn-panel sw-panel">
-        <h2 class="sn-panel__title">Confiance par variable</h2>
-        <p class="sn-section-hint">
-          Probabilité calibrée que la prévision reste sous une tolérance (ex. ±1.5 °C).
-          Vérifiée contre la réanalyse sur les 3 derniers mois, hors échantillon.
-        </p>
-        <div class="sw-vars" id="vars"></div>
+      <!-- Temperature timeline -->
+      <section class="card timeline">
+        <div class="card__head">
+          <h2 class="card__title">Température</h2>
+          <span class="card__badge" id="timeline-badge"></span>
+        </div>
+        <div class="timeline__chart" id="timeline-chart"></div>
       </section>
 
-      <section class="sn-panel sw-panel">
-        <h2 class="sn-panel__title">Détail horaire</h2>
-        <div class="sn-table-wrap">
-          <table class="sn-table sw-table">
+      <!-- Hourly cards -->
+      <section class="hours" id="hours"></section>
+
+      <!-- Confidence -->
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title">Confiance de la prévision</h2>
+          <span class="card__badge card__badge--muted" id="conf-overall"></span>
+        </div>
+        <p class="card__hint">
+          Probabilité calibrée que la valeur reste sous une tolérance (ex. ±1.5 °C),
+          vérifiée hors échantillon contre la réanalyse sur les 3 derniers mois.
+        </p>
+        <div class="vars" id="vars"></div>
+      </section>
+
+      <!-- Hourly table -->
+      <section class="card">
+        <h2 class="card__title">Détail horaire</h2>
+        <div class="tablewrap">
+          <table class="table">
             <thead>
               <tr>
                 <th>Heure</th>
                 <th>Temp</th>
+                <th>Ressenti</th>
                 <th>Pluie</th>
                 <th>Vent</th>
                 <th>Humid</th>
                 <th>Nébulo</th>
-                <th>Conf.</th>
+                <th>Pression</th>
               </tr>
             </thead>
             <tbody id="table-body"></tbody>
@@ -83,6 +112,10 @@
         </div>
       </section>
     </main>
+
+    <footer class="footer">
+      <span id="footer-note"></span>
+    </footer>
   </div>
 
   <script src="/static/app.js" defer></script>
