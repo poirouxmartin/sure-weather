@@ -1,4 +1,4 @@
-const CACHE = "sure-weather-v2";
+const CACHE = "sure-weather-v3";
 const APP_SHELL = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg"];
 
 self.addEventListener("install", (e) => {
@@ -29,7 +29,9 @@ self.addEventListener("fetch", (e) => {
     );
     return;
   }
+  // Network-first for assets: a stale service-worker cache must never pin
+  // old JS/CSS during development. Offline falls back to the cached shell.
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request))
+    fetch(e.request).catch(() => caches.match(e.request).then((hit) => hit || Promise.reject()))
   );
 });

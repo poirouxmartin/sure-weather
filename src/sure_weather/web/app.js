@@ -166,7 +166,9 @@ function render(data) {
 
   el("loc-name").textContent = state.name;
   el("loc-meta").textContent = `cellule ${data.cell} · mis à jour à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
-  el("footer-note").textContent = `Fusion de 5 centres météo · correction de biais par cellule · source ${data.cell}`;
+  el("footer-note").textContent = `Fusion de ${data.forecast[0]?.contributors?.length ?? 5} centres météo · correction de biais par cellule · source ${data.cell}`;
+  centerMapOn(state.lat, state.lon, state.name);
+  loadRadar();
 
   /* Hero: current conditions */
   const nowRow = byTime[times[0]] || {};
@@ -351,5 +353,105 @@ $("#range-seg").addEventListener("click", (e) => {
   loadForecast();
 });
 
+/* ---- Map & radar ---- */
+
+let map = null;
+let radarLayer = null;
+let marker = null;
+let radarFrames = [];
+let radarPlaying = false;
+let radarTimer = null;
+let radarIdx = 0;
+
+function initMap() {
+  if (map || !window.L) return;
+  map = L.map("map", { zoomControl: true }).setView([state.lat, state.lon], 9);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+  }).addTo(map);
+  marker = L.circleMarker([state.lat, state.lon], {
+    radius: 8,
+    color: "#fff",
+    weight: 2,
+    fillColor: "#2b6df6",
+    fillOpacity: 0.9,
+  }).addTo(map);
+  marker.bindPopup(`<b>${state.name}</b>`);
+}
+
+async function loadRadar() {
+  const status = el("radar-status");
+  try {
+    const r = await fetch("/radar");
+    if (!r.ok) throw new Error(`radar ${r.status}`);
+    const d = await r.json();
+    const all = [...(d.radar?.past || []), ...(d.radar?.nowcast || [])];
+    if (!all.length) {
+      status.textContent = "pas de données radar";
+      return;
+    }
+    radarFrames = all.map((f) => ({
+      host: d.host,
+      path: f.path,
+      time: f.time,
+    }));
+    status.textContent = `radar live · ${new Date(radarFrames[radarFrames.length - 1].time * 1000).toLocaleTimeString("fr-FR")}`;
+    if (!radarPlaying) showRadarFrame(radarFrames.length - 1);
+  } catch (e) {
+    status.textContent = "radar indisponible";
+  }
+}
+
+function showRadarFrame(idx) {
+  if (!map || !radarFrames.length) return;
+  radarIdx = ((idx % radarFrames.length) + radarFrames.length) % radarFrames.length;
+  const f = radarFrames[radarIdx];
+  if (radarLayer) map.removeLayer(radarLayer);
+  const RadarLayer = L.TileLayer.extend({
+    getTileUrl(coords) {
+      const n = Math.pow(2, coords.z);
+      if (coords.z < 8) return L.Util.emptyImageUrl;
+      return `${f.host}${f.path}/256/${coords.z}/${coords.x}/${coords.y}.png`;
+    },
+  });
+  radarLayer = new RadarLayer({ opacity: 0.75 }).addTo(map);
+  const t = new Date(f.time * 1000);
+  const label = `${t.toLocaleTimeString("fr-FR")}${f.path.includes("nowcast") ? " (prévision)" : ""}`;
+  el("radar-status").textContent = `radar ${label}`;
+}
+
+function toggleRadarPlay() {
+  if (!radarFrames.length) return;
+  if (radarPlaying) {
+    radarPlaying = false;
+    clearInterval(radarTimer);
+    el("radar-play").textContent = "▶ Lecture";
+    showRadarFrame(radarFrames.length - 1);
+  } else {
+    radarPlaying = true;
+    el("radar-play").textContent = "⏸ Pause";
+    radarIdx = radarFrames.length - 1;
+    showRadarFrame(radarIdx);
+    radarTimer = setInterval(() => {
+      radarIdx = (radarIdx + 1) % radarFrames.length;
+      showRadarFrame(radarIdx);
+    }, 500);
+  }
+}
+
+function centerMapOn(lat, lon, name) {
+  if (!map) return;
+  map.setView([lat, lon], 9);
+  if (marker) {
+    marker.setLatLng([lat, lon]);
+    marker.setPopupContent(`<b>${name}</b>`);
+  }
+}
+
+$("#radar-play").addEventListener("click", toggleRadarPlay);
+
 /* Boot */
 loadForecast();
+initMap();
+loadRadar();

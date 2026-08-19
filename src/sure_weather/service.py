@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from .calibration import compute_residuals, learn_stats
-from .collectors import ARCHIVE_MODELS, FORECAST_MODELS, OpenMeteoCollector
+from .collectors import (
+    ARCHIVE_MODELS,
+    FORECAST_MODELS,
+    HIGH_RES_MODELS,
+    OpenMeteoCollector,
+)
 from .config import Config
 from .fusion import ProviderStat, fuse, horizon_bucket, spatial_stats
 from .grid import cell_from_point
@@ -64,7 +69,7 @@ class WeatherService:
         ).fetchone()
         if row and row[0] > 0:
             return
-        for m in FORECAST_MODELS + ARCHIVE_MODELS:
+        for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
             self.storage.upsert_provider(Provider(name=m, kind="model"))
         self.storage.upsert_cells([(center.key, center.lat, center.lon)])
 

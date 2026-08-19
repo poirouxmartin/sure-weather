@@ -77,6 +77,30 @@
       <!-- Hourly cards -->
       <section class="hours" id="hours"></section>
 
+      <!-- Radar & map -->
+      <section class="card mapcard">
+        <div class="card__head">
+          <h2 class="card__title">Radar & carte</h2>
+          <span class="card__badge card__badge--muted" id="radar-status"></span>
+        </div>
+        <p class="card__hint">
+          Précipitations en temps réel (radar, ~1 km) autour du point — la météo
+          n'est pas la même à 1 km d'ici.
+        </p>
+        <div id="map"></div>
+        <div class="map__controls">
+          <button class="btn btn--ghost" id="radar-play" type="button">▶ Lecture</button>
+          <label class="map__layers">
+            <select id="map-layer">
+              <option value="radar">Radar pluie (live)</option>
+              <option value="precip">Précipitation (modèle)</option>
+              <option value="temp">Température</option>
+              <option value="streets">Rue</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
       <!-- Confidence -->
       <section class="card">
         <div class="card__head">
@@ -118,6 +142,8 @@
     </footer>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="/static/app.js" defer></script>
 </body>
 </html>

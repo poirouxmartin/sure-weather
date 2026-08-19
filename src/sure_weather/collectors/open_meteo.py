@@ -32,6 +32,15 @@ FORECAST_MODELS = [
     "arpege_seamless",
 ]
 
+# High-resolution regional models, fetched separately so their absence for a
+# location (e.g. AROME outside France) never breaks the global-model request.
+# They bring km-scale precision for the "micro" weather: AROME France is
+# 1.3 km, ICON-D2 is 2.2 km over Europe.
+HIGH_RES_MODELS = [
+    "meteofrance_arome_france",
+    "icon_d2",
+]
+
 # Reanalysis products on the archive host, used as calibration ground truth.
 ARCHIVE_MODELS = [
     "era5_seamless",
@@ -69,7 +78,12 @@ class OpenMeteoCollector:
         client = self.client or httpx.Client(timeout=60)
         resp = client.get(url, params=params)
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise httpx.HTTPError(
+                f"invalid JSON from {url}: {resp.text[:120]!r}"
+            ) from exc
 
     def fetch_forecast(
         self,
@@ -77,12 +91,17 @@ class OpenMeteoCollector:
         models: list[str] | None = None,
         forecast_days: int = 7,
         past_days: int = 0,
+        include_high_res: bool = True,
     ) -> list[ForecastSample]:
         """Fetch the latest forecast run of every model for a cell.
 
         Timestamps are hourly. `past_days` requests each model's own analysis
         for recent past hours, stored with issued_at == valid_at so it can be
         calibrated against reanalysis immediately.
+
+        High-resolution regional models (AROME, ICON-D2) are requested in a
+        separate, best-effort call: they cover only Europe, so their absence
+        for a cell elsewhere must not fail the whole fetch.
         """
         models = models or FORECAST_MODELS
         params = {
@@ -97,13 +116,35 @@ class OpenMeteoCollector:
         if past_days:
             params["past_days"] = past_days
         data = self._get(f"{self.config.open_meteo_base}/forecast", params)
+        samples = self._samples_from(data, models, cell)
+        if include_high_res:
+            for m in HIGH_RES_MODELS:
+                if m in models:
+                    continue
+                try:
+                    hr_params = dict(params)
+                    hr_params["models"] = m
+                    hr = self._get(
+                        f"{self.config.open_meteo_base}/forecast", hr_params
+                    )
+                    samples.extend(self._samples_from(hr, [m], cell))
+                except httpx.HTTPError:
+                    continue
+        return samples
+
+    def _samples_from(
+        self, data: dict, models: list[str], cell: Cell
+    ) -> list[ForecastSample]:
+        """Parse an Open-Meteo forecast payload into ForecastSample objects."""
         times, hourly = _parse_hourly(data)
         now = datetime.now(timezone.utc)
 
         samples: list[ForecastSample] = []
         for var in _FORECAST_VARS:
             for model in models:
-                values = hourly.get(f"{var}_{model}")
+                # With a single model Open-Meteo omits the model suffix in
+                # the hourly keys; with several models it uses {var}_{model}.
+                values = hourly.get(f"{var}_{model}") or hourly.get(var)
                 if not values:
                     continue
                 for t, v in zip(times, values):

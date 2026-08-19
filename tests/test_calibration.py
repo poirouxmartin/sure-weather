@@ -78,3 +78,23 @@ def test_storage_roundtrip(tmp_path):
     assert len(samples) == 1
     assert samples[0].value == 12.0
     storage.close()
+
+
+def test_samples_from_single_model_uses_unsuffixed_keys():
+    from sure_weather.collectors.open_meteo import OpenMeteoCollector
+    from sure_weather.models import Cell
+
+    data = {
+        "hourly": {
+            "time": ["2026-08-19T10:00", "2026-08-19T11:00"],
+            "temperature_2m": [20.5, 21.0],
+            "cloud_cover": [10, 15],
+        }
+    }
+    coll = OpenMeteoCollector(Config())
+    cell = Cell("48.9,2.4", 48.9, 2.4)
+    samples = coll._samples_from(data, ["meteofrance_arome_france"], cell)
+    vars_found = {s.variable for s in samples}
+    assert {"temperature_2m", "cloud_cover"} <= vars_found
+    assert all(s.provider == "meteofrance_arome_france" for s in samples)
+    assert all(s.cell_key == "48.9,2.4" for s in samples)

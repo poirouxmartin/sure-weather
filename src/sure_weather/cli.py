@@ -5,7 +5,12 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .calibration import compute_residuals
-from .collectors import ARCHIVE_MODELS, FORECAST_MODELS, OpenMeteoCollector
+from .collectors import (
+    ARCHIVE_MODELS,
+    FORECAST_MODELS,
+    HIGH_RES_MODELS,
+    OpenMeteoCollector,
+)
 from .config import load_config
 from .grid import cells_in_bbox, cell_from_point, iter_cells_nearby
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Provider
@@ -25,7 +30,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     config = load_config()
     storage = Storage(config.db_path)
     collector = OpenMeteoCollector(config)
-    for m in FORECAST_MODELS:
+    for m in FORECAST_MODELS + HIGH_RES_MODELS:
         storage.upsert_provider(Provider(name=m, kind="model"))
 
     lat, lon = _parse_point(args.point)
@@ -118,7 +123,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     config = load_config()
     storage = Storage(config.db_path)
     collector = OpenMeteoCollector(config)
-    for m in FORECAST_MODELS + ARCHIVE_MODELS:
+    for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
         storage.upsert_provider(Provider(name=m, kind="model"))
 
     lat, lon = _parse_point(args.point)

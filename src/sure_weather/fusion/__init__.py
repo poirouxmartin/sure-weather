@@ -19,6 +19,7 @@ _KIND_PRIOR_RMSE = {"model": 2.0, "station": 1.0}
 # within +/- tolerance of the true value. This makes confidence a calibrated
 # probability (error within tolerance), not an arbitrary score.
 # Values are chosen as meteorologically defensible "acceptable error" bounds.
+# Visibility is in meters (up to ~70 km), so its tolerance is ±5 km.
 _VARIABLE_TOLERANCE = {
     "temperature_2m": 1.5,
     "dew_point_2m": 2.5,
@@ -29,7 +30,7 @@ _VARIABLE_TOLERANCE = {
     "wind_speed_10m": 2.0,
     "wind_gusts_10m": 3.0,
     "pressure_msl": 2.0,
-    "visibility": 5.0,
+    "visibility": 5000.0,
 }
 
 # Physical bounds per variable: the fused value is clipped to these ranges.

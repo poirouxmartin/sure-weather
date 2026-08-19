@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+import httpx
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +29,24 @@ def weather(
     hours: int = Query(48, ge=1, le=168),
 ) -> dict:
     return _service.forecast(lat, lon, hours=hours)
+
+
+@app.get("/radar")
+def radar() -> dict:
+    """Proxy to RainViewer's radar frame index (past + nowcast, free, keyless).
+
+    The frames give 256px XYZ tile URLs for precipitation radar; nowcast
+    extends the last measured frame ~30 min ahead. The client animates them
+    over a map. Proxying avoids CORS and keeps the tile host configurable.
+    """
+    try:
+        r = httpx.get(
+            "https://api.rainviewer.com/public/weather-maps.json", timeout=30
+        )
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"radar upstream: {exc}") from exc
 
 
 _web_dir = Path(__file__).parent / "web"

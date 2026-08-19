@@ -164,3 +164,23 @@ def test_consensus_clipped_to_physical_bounds():
         samples, {}, {"model_a": "model", "model_b": "model"}, cfg, NOW
     )
     assert results[0].consensus <= 100.0
+
+
+def test_visibility_confidence_within_reasonable_range():
+    """Visibility values are ~70 km; a 5 m tolerance would give ~0 confidence.
+
+    The meteorologically defensible ±5 km tolerance must produce a usable,
+    non-degenerate confidence for large visibility values.
+    """
+    cfg = Config()
+    samples = [
+        _sample_var("model_a", "visibility", 30000.0, 3),
+        _sample_var("model_b", "visibility", 32000.0, 3),
+    ]
+    results = fuse(
+        samples, {}, {"model_a": "model", "model_b": "model"}, cfg, NOW
+    )
+    r = results[0]
+    assert r.variable == "visibility"
+    assert r.confidence > 0.1  # would be ~0 with the old 5 m tolerance
+    assert r.consensus > 20000.0
