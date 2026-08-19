@@ -74,7 +74,7 @@ function weatherKey(row) {
   const rain = row.precipitation?.value ?? 0;
   const prob = row.precipitation_probability?.value ?? 0;
   if (rain > 5) return { icon: "⛈", sky: "storm" };
-  if (rain > 0.3 || prob > 70) return { icon: "🌧", sky: "rain" };
+  if (prob >= 70 || rain > 0.3) return { icon: "🌧", sky: "rain" };
   if (cloud >= 70) return { icon: "☁️", sky: isNight(row.time) ? "night" : "partly" };
   if (cloud >= 30) return { icon: "⛅", sky: isNight(row.time) ? "night" : "partly" };
   return { icon: isNight(row.time) ? "🌙" : "☀️", sky: isNight(row.time) ? "night" : "day" };
@@ -84,10 +84,22 @@ function confBadge(c, calibrated) {
   if (!calibrated || c === null || c === undefined) {
     return `<span class="hour__conf hour__conf--na">non cal.</span>`;
   }
-  if (c >= 0.99) return `<span class="hour__conf hour__conf--hi">99%+</span>`;
+  if (c >= 0.98) return `<span class="hour__conf hour__conf--hi">sûr 98%+</span>`;
   if (c >= 0.95) return `<span class="hour__conf hour__conf--hi">95%+</span>`;
   if (c >= 0.9) return `<span class="hour__conf hour__conf--mid">90%+</span>`;
   return `<span class="hour__conf hour__conf--lo"><90%</span>`;
+}
+
+/* Honest range display: show the interval instead of a fake-precise point. */
+function rangeText(item, d = 1) {
+  if (!item) return "—";
+  if (item.calibrated && item.confidence >= 0.98) {
+    return `${round(item.value, d)}${d === 1 ? "" : ""}`;
+  }
+  const lo = item.low !== undefined ? round(item.low, d) : null;
+  const hi = item.high !== undefined ? round(item.high, d) : null;
+  if (lo !== null && hi !== null && lo !== hi) return `${lo}–${hi}`;
+  return round(item.value, d);
 }
 
 function confColor(c) {
@@ -176,13 +188,15 @@ function render(data) {
   el("sky-icon").textContent = wk.icon;
   document.body.dataset.sky = wk.sky;
   const t = nowRow.temperature_2m;
-  el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
-  el("now-feels").textContent = t ? `Ressenti ${round(t.value - 0)}°` : "";
+  el("now-temp").textContent = t ? `${rangeText(t)}°` : "—";
+  el("now-feels").textContent = t
+    ? `Ressenti ${rangeText(t)}°` + (t.calibrated && t.confidence < 0.98 ? ` (±${round(t.tolerance)}°)` : "")
+    : "";
   const det = [];
-  if (nowRow.wind_speed_10m) det.push(`Vent ${round(nowRow.wind_speed_10m.value)} m/s`);
-  if (nowRow.relative_humidity_2m) det.push(`Humidité ${round(nowRow.relative_humidity_2m.value, 0)}%`);
-  if (nowRow.pressure_msl) det.push(`${round(nowRow.pressure_msl.value, 0)} hPa`);
-  if (nowRow.precipitation) det.push(`Pluie ${round(nowRow.precipitation.value, 2)} mm`);
+  if (nowRow.wind_speed_10m) det.push(`Vent ${rangeText(nowRow.wind_speed_10m)} m/s`);
+  if (nowRow.relative_humidity_2m) det.push(`Humidité ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
+  if (nowRow.pressure_msl) det.push(`${rangeText(nowRow.pressure_msl, 0)} hPa`);
+  if (nowRow.precipitation_probability) det.push(`Pluie ${round(nowRow.precipitation_probability.value, 0)}%`);
   el("now-details").innerHTML = det.map((d) => `<span>${d}</span>`).join("");
   const rainSum = fc.filter((i) => i.variable === "precipitation").reduce((a, i) => a + (i.value || 0), 0);
   const maxT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.max(a, i.value), -99);
@@ -200,8 +214,45 @@ function render(data) {
   /* Confidence per variable */
   renderConfidence(fc);
 
+  /* Global sure badge */
+  renderSureBadge(data.summary);
+
   /* Table */
   renderTable(times, byTime);
+}
+
+/* Verdict banner: how much of the requested window is genuinely sure. */
+function renderSureBadge(summary) {
+  const badge = el("sure-badge");
+  if (!summary?.horizons) {
+    badge.hidden = true;
+    return;
+  }
+  const h = state.hours <= 24 ? "12h" : state.hours <= 72 ? "48h" : "J+";
+  const bucket = summary.horizons[h] || summary.horizons["3h"];
+  if (!bucket) {
+    badge.hidden = true;
+    return;
+  }
+  const share = Math.round(bucket.sure_share * 100);
+  const avg = Math.round(bucket.avg_confidence * 100);
+  let cls, label;
+  if (share >= 70) {
+    cls = "sure--ok";
+    label = "✓ météo sûre";
+  } else if (share >= 40) {
+    cls = "sure--mid";
+    label = "fiable";
+  } else if (share >= 15) {
+    cls = "sure--warn";
+    label = "incertitude";
+  } else {
+    cls = "sure--bad";
+    label = "pas fiable";
+  }
+  badge.hidden = false;
+  badge.className = `sure-badge ${cls}`;
+  badge.textContent = `${label} · ${share}% des valeurs sûres (conf. moy. ${avg}%)`;
 }
 
 function renderTimeline(times, byTime) {
@@ -246,7 +297,7 @@ function renderHours(times, byTime) {
     const row = byTime[t] || {};
     const wk = weatherKey({ ...row, time: t });
     const temp = row.temperature_2m;
-    const rain = row.precipitation;
+    const prob = row.precipitation_probability;
     const wind = row.wind_speed_10m;
     const confs = VAR_ORDER.filter((v) => row[v] && row[v].calibrated).map((v) => row[v].confidence);
     const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
@@ -257,9 +308,9 @@ function renderHours(times, byTime) {
       <div class="hour__time">${fmtTime(t)}</div>
       <div class="hour__day">${fmtDay(t)}</div>
       <div class="hour__ic">${wk.icon}</div>
-      <div class="hour__temp">${temp ? round(temp.value) + "°" : "—"}</div>
-      <div class="hour__row">${rain && rain.value > 0.05 ? `💧 ${round(rain.value, 1)} mm` : ""}</div>
-      <div class="hour__row">${wind ? `🌬 ${round(wind.value)} m/s` : ""}</div>
+      <div class="hour__temp">${temp ? rangeText(temp) + "°" : "—"}</div>
+      <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
+      <div class="hour__row">${wind ? `🌬 ${rangeText(wind)} m/s` : ""}</div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
@@ -273,6 +324,7 @@ function renderConfidence(fc) {
     const items = fc.filter((i) => i.variable === v && i.calibrated);
     if (!items.length) continue;
     const avg = items.reduce((a, i) => a + i.confidence, 0) / items.length;
+    const sureShare = items.filter((i) => i.confidence >= 0.98).length / items.length;
     const pct = Math.round(avg * 100);
     overall.push(pct);
     const color = confColor(avg);
@@ -281,7 +333,7 @@ function renderConfidence(fc) {
     div.innerHTML = `
       <div class="var__head">
         <span class="var__label">${VAR_LABELS[v] || v}</span>
-        <span class="var__value" style="color:${color}">${pct}%</span>
+        <span class="var__value" style="color:${color}">${pct}% · ${Math.round(sureShare * 100)}% sûres</span>
       </div>
       <div class="var__track">
         <div class="var__bar" style="width:${pct}%; background:${color}"></div>
@@ -290,7 +342,7 @@ function renderConfidence(fc) {
   }
   if (overall.length) {
     const m = Math.round(overall.reduce((a, b) => a + b, 0) / overall.length);
-    el("conf-overall").textContent = `moyenne ${m}%`;
+    el("conf-overall").textContent = `moyenne ${m}% (calibrée)`;
   }
 }
 
@@ -302,12 +354,12 @@ function renderTable(times, byTime) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${fmtTime(t)}</td>
-      <td>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
-      <td>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
-      <td>${row.precipitation ? round(row.precipitation.value, 2) + " mm" : "—"}</td>
-      <td>${row.wind_speed_10m ? round(row.wind_speed_10m.value) + " m/s" : "—"}</td>
+      <td>${row.temperature_2m ? rangeText(row.temperature_2m) + "°" : "—"}</td>
+      <td>${row.dew_point_2m ? round(row.dew_point_2m.value) + "°" : "—"}</td>
+      <td>${row.precipitation_probability ? round(row.precipitation_probability.value, 0) + "%" : "—"}</td>
+      <td>${row.wind_speed_10m ? rangeText(row.wind_speed_10m) + " m/s" : "—"}</td>
       <td>${row.relative_humidity_2m ? round(row.relative_humidity_2m.value, 0) + "%" : "—"}</td>
-      <td>${row.cloud_cover ? round(row.cloud_cover.value, 0) + "%" : "—"}</td>
+      <td>${row.cloud_cover ? rangeText(row.cloud_cover, 0) + "%" : "—"}</td>
       <td>${row.pressure_msl ? round(row.pressure_msl.value, 0) + " hPa" : "—"}</td>`;
     tb.appendChild(tr);
   }

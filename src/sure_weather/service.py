@@ -10,10 +10,58 @@ from .collectors import (
     OpenMeteoCollector,
 )
 from .config import Config
-from .fusion import ProviderStat, fuse, horizon_bucket, spatial_stats
+from .fusion import (
+    ProviderStat,
+    _VARIABLE_TOLERANCE,
+    fuse,
+    horizon_bucket,
+    spatial_stats,
+)
 from .grid import cell_from_point
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Cell, Provider
 from .storage import Storage
+
+
+# Key variables users care about for a "sure" promise; precipitation is shown
+# as calibrated probability instead of a point estimate.
+_SURE_VARIABLES = (
+    "temperature_2m",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+    "pressure_msl",
+    "dew_point_2m",
+    "precipitation_probability",
+)
+
+
+def _summarize(forecast: list[dict], hours: int) -> dict:
+    """Per-horizon summary of how much of the forecast is genuinely 'sure'."""
+    bands = [(0, 6, "3h"), (6, 24, "12h"), (24, 72, "48h"), (72, hours, "J+")]
+    horizons: dict[str, dict] = {}
+    by_var: dict[str, list[float]] = {}
+    for item in forecast:
+        if item["variable"] in _SURE_VARIABLES:
+            by_var.setdefault(item["variable"], []).append(item["confidence"])
+            for lo, hi, label in bands:
+                if lo < item["horizon_h"] <= hi or (lo == 0 and item["horizon_h"] <= hi):
+                    horizons.setdefault(label, []).append(item["confidence"])
+                    break
+    summary = {"horizons": {}, "variables": {}}
+    for label, confs in horizons.items():
+        if confs:
+            avg = sum(confs) / len(confs)
+            summary["horizons"][label] = {
+                "avg_confidence": round(avg, 3),
+                "sure_share": round(sum(1 for c in confs if c >= 0.98) / len(confs), 3),
+                "n": len(confs),
+            }
+    for var, confs in by_var.items():
+        avg = sum(confs) / len(confs)
+        summary["variables"][var] = {
+            "avg_confidence": round(avg, 3),
+            "sure": avg >= 0.98,
+        }
+    return summary
 
 
 class WeatherService:
@@ -116,6 +164,7 @@ class WeatherService:
         for r in results:
             if r.valid_at < now or r.valid_at > until:
                 continue
+            tol = _VARIABLE_TOLERANCE.get(r.variable, 1.5)
             out.append(
                 {
                     "variable": r.variable,
@@ -125,6 +174,15 @@ class WeatherService:
                     "calibrated": r.calibrated,
                     "dispersion": round(r.dispersion, 3),
                     "bias_corrected": r.bias_corrected,
+                    "tolerance": tol,
+                    # Honest range: value +/- tolerance at the stated confidence.
+                    "low": round(r.consensus - tol, 2),
+                    "high": round(r.consensus + tol, 2),
+                    # "Sure" only when calibration is active AND confidence is high.
+                    "sure": r.calibrated and r.confidence >= 0.98,
+                    "horizon_h": round(
+                        (r.valid_at - now).total_seconds() / 3600.0, 1
+                    ),
                     "contributors": [p for p, _, _ in r.contributors],
                 }
             )
@@ -133,4 +191,5 @@ class WeatherService:
             "cell": center.key,
             "generated_at": now.isoformat(),
             "forecast": out,
+            "summary": _summarize(out, hours),
         }

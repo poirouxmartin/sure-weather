@@ -30,6 +30,11 @@ FORECAST_MODELS = [
     "icon_seamless",
     "metno_seamless",
     "arpege_seamless",
+    "gem_seamless",
+    "ukmo_seamless",
+    "jma_seamless",
+    "knmi_seamless",
+    "icon_eu",
 ]
 
 # High-resolution regional models, fetched separately so their absence for a
