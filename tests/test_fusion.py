@@ -5,8 +5,9 @@ from sure_weather.fusion import (
     ProviderStat,
     fuse,
     horizon_bucket,
+    spatial_stats,
 )
-from sure_weather.models import ForecastSample
+from sure_weather.models import Cell, ForecastSample
 
 NOW = datetime.now(timezone.utc)
 CELL = "48.9,2.4"
@@ -17,6 +18,17 @@ def _sample(provider, value, valid_offset_h, issued_offset_h=-1):
         provider=provider,
         cell_key=CELL,
         variable="temperature_2m",
+        issued_at=NOW + timedelta(hours=issued_offset_h),
+        valid_at=NOW + timedelta(hours=valid_offset_h),
+        value=value,
+    )
+
+
+def _sample_var(provider, variable, value, valid_offset_h, issued_offset_h=-1):
+    return ForecastSample(
+        provider=provider,
+        cell_key=CELL,
+        variable=variable,
         issued_at=NOW + timedelta(hours=issued_offset_h),
         valid_at=NOW + timedelta(hours=valid_offset_h),
         value=value,
@@ -123,3 +135,32 @@ def test_multi_model_weights_by_learned_rmse():
     assert r.consensus > 25.5
     weights = {p: w for p, _, w in r.contributors}
     assert weights["ecmwf"] > weights["gfs"] * 10
+
+
+def test_spatial_stats_borrows_from_neighbors():
+    cfg = Config()
+    bucket = 3.0
+    cells = [Cell("48.8,2.4", 48.8, 2.4), Cell("48.9,2.4", 48.9, 2.4)]
+    src = ProviderStat("ecmwf", "48.8,2.4", "temperature_2m", bucket, 200, 0.8, 1.2, NOW)
+    stats = {("ecmwf", "48.8,2.4", "temperature_2m", bucket): src}
+    out = spatial_stats(stats, cells, sigma_km=30.0)
+    borrowed = out.get(("ecmwf", "48.9,2.4", "temperature_2m", bucket))
+    assert borrowed is not None
+    assert borrowed.samples >= 1
+    assert abs(borrowed.bias - src.bias) < 1e-6
+    # A distant cell borrows almost nothing.
+    far = Cell("50.9,4.4", 50.9, 4.4)
+    out2 = spatial_stats(stats, cells + [far], sigma_km=30.0)
+    assert out2.get(("ecmwf", "50.9,4.4", "temperature_2m", bucket)) is None
+
+
+def test_consensus_clipped_to_physical_bounds():
+    cfg = Config()
+    samples = [
+        _sample_var("model_a", "cloud_cover", 101.9, 3),
+        _sample_var("model_b", "cloud_cover", 102.0, 3),
+    ]
+    results = fuse(
+        samples, {}, {"model_a": "model", "model_b": "model"}, cfg, NOW
+    )
+    assert results[0].consensus <= 100.0

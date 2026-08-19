@@ -32,6 +32,20 @@ _VARIABLE_TOLERANCE = {
     "visibility": 5.0,
 }
 
+# Physical bounds per variable: the fused value is clipped to these ranges.
+_VARIABLE_BOUNDS = {
+    "temperature_2m": (None, None),
+    "dew_point_2m": (None, None),
+    "relative_humidity_2m": (0.0, 100.0),
+    "precipitation": (0.0, None),
+    "precipitation_probability": (0.0, 100.0),
+    "cloud_cover": (0.0, 100.0),
+    "wind_speed_10m": (0.0, None),
+    "wind_gusts_10m": (0.0, None),
+    "pressure_msl": (None, None),
+    "visibility": (0.0, None),
+}
+
 
 @dataclass(frozen=True)
 class ProviderStat:
@@ -253,6 +267,11 @@ def _fuse_one(
         if weights.sum() > 0
         else float(np.median(corrected_arr))
     )
+    lo, hi = _VARIABLE_BOUNDS.get(variable, (None, None))
+    if lo is not None:
+        consensus = max(consensus, lo)
+    if hi is not None:
+        consensus = min(consensus, hi)
     residual_spread = float(
         np.average(np.abs(corrected_arr - consensus), weights=weights)
     )
