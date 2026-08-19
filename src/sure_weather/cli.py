@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from .calibration import compute_residuals
 from .collectors import ARCHIVE_MODELS, FORECAST_MODELS, OpenMeteoCollector
 from .config import load_config
-from .grid import cells_in_bbox, cell_from_point
+from .grid import cells_in_bbox, cell_from_point, iter_cells_nearby
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Provider
 from .storage import Storage
 from .service import WeatherService
@@ -78,7 +78,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     # Pull forecasts and observations over the residual window.
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=config.residual_window_days)
+    start = end - timedelta(days=args.days)
 
     # Gather cells that have data.
     cells = [
@@ -109,10 +109,11 @@ def cmd_forecast(args: argparse.Namespace) -> None:
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
-    """Backfill a cell: 92 days of model analysis + archive, then calibrate.
+    """Backfill cells: 92 days of model analysis + archive, then calibrate.
 
     Gives ~3 months of residuals per cell, the maximum Open-Meteo exposes for
     past model analysis. This makes learned bias/rmse statistically solid.
+    Supports a single point, a bounding box (--bbox) or a radius (--radius).
     """
     config = load_config()
     storage = Storage(config.db_path)
@@ -121,21 +122,30 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         storage.upsert_provider(Provider(name=m, kind="model"))
 
     lat, lon = _parse_point(args.point)
-    cells = [cell_from_point(lat, lon, config)]
+    if args.bbox:
+        (min_lat, min_lon), (max_lat, max_lon) = (
+            _parse_point(args.bbox[0]),
+            _parse_point(args.bbox[1]),
+        )
+        cells = cells_in_bbox(min_lat, max_lat, min_lon, max_lon, config)
+    elif args.radius:
+        cells = list(iter_cells_nearby(lat, lon, args.radius, config))
+    else:
+        cells = [cell_from_point(lat, lon, config)]
     storage.upsert_cells((c.key, c.lat, c.lon) for c in cells)
-    c = cells[0]
+    print(f"backfilling {len(cells)} cells")
 
-    print("fetching 92d of model analysis...")
-    samples = collector.fetch_forecast(c, forecast_days=1, past_days=92)
-    storage.insert_forecasts(samples)
-    print(f"  {len(samples)} forecast samples")
-
-    print("fetching 92d of reanalysis...")
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=92)
-    obs = collector.fetch_historical(c, start, end)
-    storage.insert_observations(obs)
-    print(f"  {len(obs)} observations")
+
+    total_fc = total_obs = 0
+    for i, c in enumerate(cells, 1):
+        samples = collector.fetch_forecast(c, forecast_days=1, past_days=92)
+        total_fc += storage.insert_forecasts(samples)
+        obs = collector.fetch_historical(c, start, end)
+        total_obs += storage.insert_observations(obs)
+        print(f"  [{i}/{len(cells)}] {c.key}: {len(samples)} fc, {len(obs)} obs")
+    print(f"inserted {total_fc} forecast samples, {total_obs} observations")
 
     print("calibrating...")
     cells_all = [
@@ -151,7 +161,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     residuals = compute_residuals(forecasts, observations)
     n = storage.insert_residuals(residuals)
     print(f"  {n} residuals")
-    print(f"cell {c.key} backfilled")
+    print(f"backfill done")
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
@@ -185,6 +195,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sure-weather")
     sub = parser.add_subparsers(dest="command", required=True)
+    config_defaults = load_config()
 
     p_collect = sub.add_parser("collect", help="fetch latest forecast for a zone")
     p_collect.add_argument("point", help="lat,lon of the zone center")
@@ -208,6 +219,12 @@ def main() -> None:
     p_cal = sub.add_parser(
         "calibrate", help="compute residuals forecast vs observation"
     )
+    p_cal.add_argument(
+        "--days",
+        type=int,
+        default=config_defaults.residual_window_days,
+        help="lookback window in days (default: config)",
+    )
     p_cal.set_defaults(func=cmd_calibrate)
 
     p_fc = sub.add_parser("forecast", help="print fused forecast for a point")
@@ -230,9 +247,15 @@ def main() -> None:
 
     p_backfill = sub.add_parser(
         "backfill",
-        help="fetch 92d of model analysis + reanalysis for a cell, then calibrate",
+        help="fetch 92d of model analysis + reanalysis for cells, then calibrate",
     )
-    p_backfill.add_argument("point", help="lat,lon")
+    p_backfill.add_argument("point", help="lat,lon of the zone center")
+    p_backfill.add_argument(
+        "--bbox", nargs=2, metavar=("SW", "NE"), help="SW lat,lon NE lat,lon"
+    )
+    p_backfill.add_argument(
+        "--radius", type=float, default=0.0, help="grid radius around the point in km"
+    )
     p_backfill.set_defaults(func=cmd_backfill)
 
     args = parser.parse_args()
