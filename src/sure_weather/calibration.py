@@ -13,24 +13,39 @@ from .collectors.open_meteo import DEFAULT_ARCHIVE
 
 PRIMARY_ARCHIVE = DEFAULT_ARCHIVE
 
+# Providers considered "ground truth" in priority order for residual matching.
+# Real station observations beat reanalysis: they measure the actual atmosphere
+# instead of reconstructing it, so residuals computed against them are more
+# honest and the learned bias/rmse transfers better to live forecasts.
+_GROUND_TRUTH_RANK = {"station": 0, "model": 1}
+
 
 def compute_residuals(
-    forecasts: list[ForecastSample], observations: list[Observation]
+    forecasts: list[ForecastSample],
+    observations: list[Observation],
+    kinds: dict[str, str] | None = None,
 ) -> list[Residual]:
     """Match each forecast to the observation at its valid time, per cell+variable.
 
     A forecast is matched to the observation that falls closest in time (within
     30 minutes) in the same cell and variable. One residual per (provider, cell,
-    variable, valid_at). When several reanalysis products are present at the
-    same timestamp, the primary ground truth wins (era5_seamless), else any.
+    variable, valid_at). When several sources are present at the same timestamp
+    the best ground truth wins: station observations outrank reanalysis.
     """
+    kinds = kinds or {}
     # Index observations by (cell, variable, rounded time), preferring the
-    # primary reanalysis product.
+    # highest-ranked ground-truth provider (station > reanalysis).
     obs_index: dict[tuple[str, str, datetime], Observation] = {}
     for o in observations:
         rounded = o.time.replace(minute=0, second=0, microsecond=0)
         key = (o.cell_key, o.variable, rounded)
-        if key not in obs_index or o.provider == PRIMARY_ARCHIVE:
+        rank = _GROUND_TRUTH_RANK.get(kinds.get(o.provider, "model"), 1)
+        current_rank = (
+            _GROUND_TRUTH_RANK.get(kinds.get(obs_index[key].provider, "model"), 1)
+            if key in obs_index
+            else 1
+        )
+        if key not in obs_index or rank <= current_rank:
             obs_index[key] = o
 
     residuals: list[Residual] = []

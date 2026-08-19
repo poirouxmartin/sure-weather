@@ -18,7 +18,13 @@ from .fusion import (
     spatial_stats,
 )
 from .grid import cell_from_point
-from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Cell, Provider
+from .models import (
+    ALL_VARIABLES,
+    OBSERVABLE_VARIABLES,
+    Cell,
+    ForecastSample,
+    Provider,
+)
 from .storage import Storage
 
 
@@ -105,17 +111,35 @@ class WeatherService:
         self._stats_fingerprint = fp
         return stats
 
-    def _ensure_cell_data(self, center: Cell) -> None:
+    def _ensure_cell_data(self, center: Cell, lat: float, lon: float) -> None:
         """Fetch model forecast + reanalysis for a cell on first demand.
 
         A cell with no stored data gets a 92-day analysis backfill so it is
         immediately calibrated: model analysis (past) + reanalysis (ground
         truth) are collected, residuals computed, and the cell joins the grid.
+        Local METAR stations around the queried point are ingested too.
         """
         row = self.storage._conn.execute(
             "SELECT COUNT(*) FROM forecasts WHERE cell_key=?", (center.key,)
         ).fetchone()
         if row and row[0] > 0:
+            # Cell is known: refresh local stations cheaply so the "now"
+            # consensus stays honest on repeat searches of the same zone,
+            # but skip when we just ingested this zone minutes ago.
+            fresh = self.storage._conn.execute(
+                "SELECT MAX(time) FROM observations WHERE cell_key=? "
+                "AND provider LIKE 'metar_%'",
+                (center.key,),
+            ).fetchone()
+            if not (fresh and fresh[0]):
+                self._ingest_nearby_stations(lat, lon)
+            else:
+                from .storage import _parse_dt
+
+                if (datetime.now(timezone.utc) - _parse_dt(fresh[0])) >= timedelta(
+                    hours=1
+                ):
+                    self._ingest_nearby_stations(lat, lon)
             return
         for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
             self.storage.upsert_provider(Provider(name=m, kind="model"))
@@ -136,14 +160,106 @@ class WeatherService:
         observations = self.storage.observations_in_window(
             [center.key], list(OBSERVABLE_VARIABLES), start, end
         )
-        residuals = compute_residuals(forecasts, observations)
+        kinds = {p.name: p.kind for p in self.storage.get_providers()}
+        residuals = compute_residuals(forecasts, observations, kinds)
         self.storage.insert_residuals(residuals)
+
+        # Discover and ingest local METAR stations around the cell: the "as
+        # many sources as possible in the corner" promise. Their observations
+        # feed the live consensus and the station-first residual matching.
+        self._ingest_nearby_stations(lat, lon)
+
+    def _ingest_nearby_stations(self, lat: float, lon: float) -> None:
+        """Fetch recent METAR reports near (lat, lon) and store observations."""
+        try:
+            from .collectors.metar import MetarCollector
+
+            collector = MetarCollector(self.config)
+            reports = collector.fetch_observations(
+                lat, lon, radius_km=self.config.obs_search_radius_km, hours=6
+            )
+            if not reports:
+                return
+            for p in collector.providers(reports):
+                self.storage.upsert_provider(p)
+            observations = []
+            for r in reports:
+                observations.extend(
+                    collector.to_observations(r, self.config.cell_resolution)
+                )
+            self.storage.insert_observations(observations)
+        except Exception:
+            # Station discovery is best-effort: a network hiccup or an empty
+            # area must never break a forecast request.
+            return
+
+    def _nearby_station_samples(
+        self, lat: float, lon: float, since: datetime
+    ) -> list[ForecastSample]:
+        """Recent station observations near the point, as live 'analysis' samples.
+
+        A station report at time T becomes a sample with issued_at == valid_at
+        == T. Because its horizon bucket is 3h (<=6h), the fusion at the current
+        hour treats it as a strong, honest measurement alongside the model
+        forecasts: stations have a higher base weight and lower prior noise than
+        global models, so the "now" consensus leans toward the real thermometer.
+        """
+        cells_near = [c for c in self.storage.get_cells()]
+        if not cells_near:
+            return []
+        from .grid import haversine_km
+
+        # Only cells within the station search radius around the point.
+        near = [
+            c
+            for c in cells_near
+            if haversine_km(lat, lon, c.lat, c.lon) <= self.config.obs_search_radius_km
+        ]
+        if not near:
+            return []
+        obs = self.storage.observations_in_window(
+            [c.key for c in near],
+            list(OBSERVABLE_VARIABLES),
+            since,
+        )
+        now = datetime.now(timezone.utc)
+        samples: list[ForecastSample] = []
+        # Keep the most recent report per station+variable, and only recent
+        # ones (within the station recency window). Older reports would just
+        # re-verify the past, not constrain the "now".
+        latest: dict[tuple[str, str], Observation] = {}
+        for o in obs:
+            if o.provider in FORECAST_MODELS or o.provider in ARCHIVE_MODELS:
+                continue  # only stations carry live truth into the consensus
+            key = (o.provider, o.variable)
+            if key not in latest or o.time > latest[key].time:
+                latest[key] = o
+        for o in latest.values():
+            if (now - o.time) > timedelta(hours=self.config.obs_recency_halflife_h * 3):
+                continue
+            # The report is treated as a measurement at the current full hour
+            # (models emit hourly timestamps starting at the next full hour),
+            # so it joins the same consensus bucket as the model forecasts.
+            valid = now.replace(minute=0, second=0, microsecond=0)
+            if now.minute > 0 or now.second > 0 or now.microsecond > 0:
+                valid = valid + timedelta(hours=1)
+            samples.append(
+                ForecastSample(
+                    provider=o.provider,
+                    cell_key=o.cell_key,
+                    variable=o.variable,
+                    issued_at=valid,
+                    valid_at=valid,
+                    value=o.value,
+                )
+            )
+        return samples
 
     def forecast(self, lat: float, lon: float, hours: int = 48) -> dict:
         """Return the fused forecast for a point, bucketed hourly."""
         now = datetime.now(timezone.utc)
         center = cell_from_point(lat, lon, self.config)
-        self._ensure_cell_data(center)
+        self._ensure_cell_data(center, lat, lon)
         # Model forecasts are fetched per-cell; the fusion targets the point's
         # own cell (global NWP models do not vary meaningfully over ~11 km,
         # and spatial stats interpolation already covers the bias). Nearby
@@ -156,6 +272,13 @@ class WeatherService:
 
         # Model forecasts for the cells around the point.
         samples = self.storage.latest_forecasts(cells, variables)
+        # Live station observations near the point join the consensus for the
+        # current hours: the "now" forecast leans on real local measurements.
+        samples.extend(
+            self._nearby_station_samples(
+                lat, lon, now - timedelta(hours=6)
+            )
+        )
         results = fuse(samples, stats, kinds, self.config, now)
 
         # Filter to the requested window and hour-bucket the output.

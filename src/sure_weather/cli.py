@@ -11,6 +11,7 @@ from .collectors import (
     HIGH_RES_MODELS,
     OpenMeteoCollector,
 )
+from .collectors.metar import MetarCollector
 from .config import load_config
 from .grid import cells_in_bbox, cell_from_point, iter_cells_nearby
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Provider
@@ -96,11 +97,60 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     observations = storage.observations_in_window(
         cells, list(OBSERVABLE_VARIABLES), start, end
     )
-    residuals = compute_residuals(forecasts, observations)
+    kinds = {p.name: p.kind for p in storage.get_providers()}
+    residuals = compute_residuals(forecasts, observations, kinds)
     n = storage.insert_residuals(residuals)
     print(
         f"matched {n} residuals from {len(forecasts)} forecasts x {len(observations)} obs"
     )
+
+
+def cmd_stations(args: argparse.Namespace) -> None:
+    """Discover local METAR stations around a point and ingest their reports.
+
+    Stations are registered as 'station' providers and their recent reports are
+    stored as observations. The calibration then prefers these real measurements
+    over reanalysis when matching residuals, making the learned bias/rmse and
+    the fused confidence more honest for the zone.
+    """
+    config = load_config()
+    storage = Storage(config.db_path)
+    collector = MetarCollector(config)
+    lat, lon = _parse_point(args.point)
+
+    radius = args.radius or config.obs_search_radius_km
+    reports = collector.fetch_observations(lat, lon, radius_km=radius, hours=args.hours)
+    stations = {r.icao for r in reports}
+    print(f"discovered {len(stations)} stations: {', '.join(sorted(stations)) or 'none'}")
+
+    for p in collector.providers(reports):
+        storage.upsert_provider(p)
+    cells: dict[str, tuple[float, float]] = {}
+    observations = []
+    for r in reports:
+        obs = collector.to_observations(r, config.cell_resolution)
+        observations.extend(obs)
+        if obs:
+            cells[obs[0].cell_key] = (None, None)  # key already carries coords
+    storage.insert_observations(observations)
+    print(f"inserted {len(observations)} station observations ({len(reports)} reports)")
+    if args.calibrate:
+        print("calibrating against station observations...")
+        cells_keys = [k for k in cells] or [
+            r[0] for r in storage._conn.execute("SELECT DISTINCT cell_key FROM forecasts")
+        ]
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=args.window)
+        forecasts = storage.forecasts_in_window(
+            cells_keys, list(ALL_VARIABLES), start, end
+        )
+        observations_all = storage.observations_in_window(
+            cells_keys, list(OBSERVABLE_VARIABLES), start, end
+        )
+        kinds = {p.name: p.kind for p in storage.get_providers()}
+        residuals = compute_residuals(forecasts, observations_all, kinds)
+        n = storage.insert_residuals(residuals)
+        print(f"  {n} residuals")
 
 
 def cmd_forecast(args: argparse.Namespace) -> None:
@@ -163,7 +213,8 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     observations = storage.observations_in_window(
         cells_all, list(OBSERVABLE_VARIABLES), start, end
     )
-    residuals = compute_residuals(forecasts, observations)
+    kinds = {p.name: p.kind for p in storage.get_providers()}
+    residuals = compute_residuals(forecasts, observations, kinds)
     n = storage.insert_residuals(residuals)
     print(f"  {n} residuals")
     print(f"backfill done")
@@ -236,6 +287,30 @@ def main() -> None:
     p_fc.add_argument("point", help="lat,lon")
     p_fc.add_argument("--hours", type=int, default=48)
     p_fc.set_defaults(func=cmd_forecast)
+
+    p_st = sub.add_parser(
+        "stations",
+        help="discover local METAR stations and ingest their observations",
+    )
+    p_st.add_argument("point", help="lat,lon")
+    p_st.add_argument(
+        "--radius", type=float, default=0.0, help="search radius in km (default: config)"
+    )
+    p_st.add_argument(
+        "--hours", type=int, default=3, help="hours of reports to fetch per station"
+    )
+    p_st.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="recompute residuals against station observations",
+    )
+    p_st.add_argument(
+        "--window",
+        type=int,
+        default=30,
+        help="calibration lookback window in days (with --calibrate)",
+    )
+    p_st.set_defaults(func=cmd_stations)
 
     p_verify = sub.add_parser(
         "verify",

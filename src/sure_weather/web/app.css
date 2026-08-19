@@ -162,6 +162,18 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#6fb2e8 0%,#a8d3f2 
 .sure--warn { background: rgba(217,119,6,.14); color: #d97706; }
 .sure--bad { background: rgba(220,38,38,.12); color: #dc2626; }
 
+.station-badge {
+  margin-left: auto;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  align-self: center;
+  white-space: nowrap;
+  background: rgba(43,109,246,.1);
+  color: #2b6df6;
+}
+
 /* ---- Segmented range ---- */
 .seg { display: inline-flex; background: rgba(255,255,255,.7); border: 1px solid rgba(20,33,61,.1); border-radius: 12px; padding: 3px; gap: 2px; margin-bottom: 16px; }
 .seg__btn {
@@ -307,5 +319,6 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#6fb2e8 0%,#a8d3f2 
   .hero__temp { font-size: 46px; }
   .hero__now { margin-left: 0; text-align: left; }
   .sure-badge { margin-left: 0; white-space: normal; }
+  .station-badge { margin-left: 0; white-space: normal; }
   .table th, .table td { padding: 6px 8px; font-size: 12px; }
 }

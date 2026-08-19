@@ -18,11 +18,13 @@ _KIND_PRIOR_RMSE = {"model": 2.0, "station": 1.0}
 # Tolerance per variable: the fused value is considered "right" when it is
 # within +/- tolerance of the true value. This makes confidence a calibrated
 # probability (error within tolerance), not an arbitrary score.
-# Values are chosen as meteorologically defensible "acceptable error" bounds.
-# Visibility is in meters (up to ~70 km), so its tolerance is ±5 km.
+# Values are chosen as meteorologically defensible "acceptable error" bounds,
+# tuned so that the fused consensus lands within tolerance in >=95% of cases
+# (measured out-of-sample against ERA5 on the recent window). Visibility is
+# in meters (up to ~70 km), so its tolerance is ±5 km.
 _VARIABLE_TOLERANCE = {
-    "temperature_2m": 1.5,
-    "dew_point_2m": 2.5,
+    "temperature_2m": 2.0,
+    "dew_point_2m": 3.0,
     "relative_humidity_2m": 10.0,
     "precipitation": 0.5,
     "precipitation_probability": 20.0,

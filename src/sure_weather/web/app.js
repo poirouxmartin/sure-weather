@@ -178,7 +178,13 @@ function render(data) {
 
   el("loc-name").textContent = state.name;
   el("loc-meta").textContent = `cellule ${data.cell} · mis à jour à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
-  el("footer-note").textContent = `Fusion de ${data.forecast[0]?.contributors?.length ?? 5} centres météo · correction de biais par cellule · source ${data.cell}`;
+  const contributors = new Set((data.forecast[0]?.contributors ?? []));
+  const stationCount = [...contributors].filter((c) => c.startsWith("metar_")).length;
+  const modelCount = contributors.size - stationCount;
+  el("footer-note").textContent =
+    `Fusion de ${modelCount} modèles` +
+    (stationCount ? ` + ${stationCount} stations locales` : "") +
+    ` · correction de biais par cellule · source ${data.cell}`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
 
@@ -217,8 +223,29 @@ function render(data) {
   /* Global sure badge */
   renderSureBadge(data.summary);
 
+  /* Local station badge */
+  renderStationBadge(fc);
+
   /* Table */
   renderTable(times, byTime);
+}
+
+/* How many local stations feed the live consensus. */
+function renderStationBadge(fc) {
+  const badge = el("station-badge");
+  const first = fc.find((i) => i.contributors?.length);
+  if (!first) {
+    badge.hidden = true;
+    return;
+  }
+  const stations = new Set(first.contributors.filter((c) => c.startsWith("metar_")));
+  if (!stations.size) {
+    badge.hidden = true;
+    return;
+  }
+  badge.hidden = false;
+  badge.className = "station-badge";
+  badge.textContent = `📍 ${stations.size} station${stations.size > 1 ? "s" : ""} locale${stations.size > 1 ? "s" : ""}`;
 }
 
 /* Verdict banner: how much of the requested window is genuinely sure. */
