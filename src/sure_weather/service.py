@@ -6,7 +6,7 @@ from .calibration import compute_residuals, learn_stats
 from .collectors import ARCHIVE_MODELS, FORECAST_MODELS, OpenMeteoCollector
 from .config import Config
 from .fusion import ProviderStat, fuse, horizon_bucket, spatial_stats
-from .grid import cell_from_point, iter_cells_nearby
+from .grid import cell_from_point
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES, Cell, Provider
 from .storage import Storage
 
@@ -17,14 +17,30 @@ class WeatherService:
     def __init__(self, storage: Storage, config: Config):
         self.storage = storage
         self.config = config
+        self._stats: dict[tuple[str, str, str, float], ProviderStat] | None = None
+        self._stats_fingerprint: tuple[str, int] | None = None
+
+    def _residuals_fingerprint(self, since: datetime) -> tuple[str, int]:
+        """Fingerprint of the residual pool used to invalidate the stats cache."""
+        row = self.storage._conn.execute(
+            "SELECT MAX(valid_at), COUNT(*) FROM residuals WHERE valid_at >= ?",
+            (since.isoformat(),),
+        ).fetchone()
+        return (row[0] or "", int(row[1] or 0))
 
     def _load_stats(self) -> dict[tuple[str, str, str, float], ProviderStat]:
-        """Materialize learned stats, spatially interpolated across cells."""
-        stats: dict[tuple[str, str, str, float], ProviderStat] = {}
-        # Stats are recomputed from residuals each time calibration runs; here we
+        """Materialize learned stats, spatially interpolated across cells.
+
+        Cached until the residual pool changes (new residuals from a
+        collect/calibrate cycle invalidate the fingerprint).
+        """
         since = datetime.now(timezone.utc) - timedelta(
             days=self.config.residual_window_days
         )
+        fp = self._residuals_fingerprint(since)
+        if self._stats is not None and fp == self._stats_fingerprint:
+            return self._stats
+        stats: dict[tuple[str, str, str, float], ProviderStat] = {}
         residuals = self.storage.residuals_window(None, None, since)
         learned = learn_stats(residuals)
         for s in learned:
@@ -32,6 +48,8 @@ class WeatherService:
         cells = self.storage.get_cells()
         if cells:
             stats = spatial_stats(stats, cells)
+        self._stats = stats
+        self._stats_fingerprint = fp
         return stats
 
     def _ensure_cell_data(self, center: Cell) -> None:
@@ -73,12 +91,11 @@ class WeatherService:
         now = datetime.now(timezone.utc)
         center = cell_from_point(lat, lon, self.config)
         self._ensure_cell_data(center)
-        cells = [
-            c.key
-            for c in iter_cells_nearby(
-                lat, lon, self.config.obs_search_radius_km, self.config
-            )
-        ]
+        # Model forecasts are fetched per-cell; the fusion targets the point's
+        # own cell (global NWP models do not vary meaningfully over ~11 km,
+        # and spatial stats interpolation already covers the bias). Nearby
+        # cells exist for future station observations, not for model fusion.
+        cells = [center.key]
         variables = list(ALL_VARIABLES)
 
         kinds = {p.name: p.kind for p in self.storage.get_providers()}
