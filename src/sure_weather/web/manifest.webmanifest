@@ -1,0 +1,17 @@
+{
+  "name": "Sure Weather",
+  "short_name": "SureWeather",
+  "description": "Prévisions météo multi-sources avec confiance calibrée par variable.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#00afbf",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

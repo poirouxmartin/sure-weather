@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#00afbf" />
+  <meta name="description" content="Prévisions météo multi-sources avec confiance calibrée par variable." />
+  <title>Sure Weather</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/setics-ui.css" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="sw-app">
+    <header class="sw-header">
+      <div class="sw-brand">
+        <div class="sw-brand__logo">
+          <svg viewBox="0 0 96 96" width="22" height="22" aria-hidden="true">
+            <path d="M24 44h32a12 12 0 0 1 0 24H36" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+            <path d="M32 40c0-10 8-18 18-18s18 8 18 18c0 6-3 11-8 14" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="sw-brand__name">Sure Weather</span>
+      </div>
+      <form class="sw-search" id="search-form" autocomplete="off">
+        <input class="sn-input sw-search__input" id="search-input" type="search"
+               placeholder="Ville ou coordonnées (lat, lon)…" />
+        <button class="sn-btn sn-btn--primary sn-btn--sm" type="submit">Chercher</button>
+      </form>
+      <button class="sn-btn sn-btn--ghost sn-btn--sm" id="locate-btn" type="button">📍 Me localiser</button>
+    </header>
+
+    <div class="sn-loading sw-loading" id="loading"><span class="sn-spin">⟳</span> Chargement…</div>
+    <div class="sn-empty sw-empty" id="empty" hidden>Aucune prévision disponible pour ce point.</div>
+    <div class="sn-banner sn-banner--error sw-error" id="error" hidden>
+      <div class="sn-banner__body">
+        <div class="sn-banner__title" id="error-title">Erreur</div>
+        <div class="sn-banner__text" id="error-text"></div>
+      </div>
+    </div>
+
+    <main id="content" hidden>
+      <section class="sw-location">
+        <div class="sw-location__name" id="loc-name">—</div>
+        <div class="sw-location__meta" id="loc-meta"></div>
+      </section>
+
+      <div class="sn-seg sw-seg" id="range-seg">
+        <button class="sn-seg__btn sn-seg__btn--active" data-hours="24">24 h</button>
+        <button class="sn-seg__btn" data-hours="72">72 h</button>
+        <button class="sn-seg__btn" data-hours="168">7 j</button>
+      </div>
+
+      <div class="sw-horizon" id="horizon"></div>
+
+      <section class="sn-panel sw-panel">
+        <h2 class="sn-panel__title">Confiance par variable</h2>
+        <p class="sn-section-hint">
+          Probabilité calibrée que la prévision reste sous une tolérance (ex. ±1.5 °C).
+          Vérifiée contre la réanalyse sur les 3 derniers mois, hors échantillon.
+        </p>
+        <div class="sw-vars" id="vars"></div>
+      </section>
+
+      <section class="sn-panel sw-panel">
+        <h2 class="sn-panel__title">Détail horaire</h2>
+        <div class="sn-table-wrap">
+          <table class="sn-table sw-table">
+            <thead>
+              <tr>
+                <th>Heure</th>
+                <th>Temp</th>
+                <th>Pluie</th>
+                <th>Vent</th>
+                <th>Humid</th>
+                <th>Nébulo</th>
+                <th>Conf.</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
