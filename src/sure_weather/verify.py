@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from .calibration import learn_stats
 from .collectors.open_meteo import DEFAULT_ARCHIVE
 from .config import Config
-from .fusion import _VARIABLE_TOLERANCE, fuse
+from .fusion import _VARIABLE_TOLERANCE, fuse, spatial_stats
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES
 from .storage import Storage
 
@@ -48,6 +48,9 @@ def verify(
         (s.provider, s.cell_key, s.variable, s.horizon_h): s
         for s in learn_stats(residuals)
     }
+    cells = storage.get_cells()
+    if cells:
+        stats = spatial_stats(stats, cells)
     kinds = {p.name: p.kind for p in storage.get_providers()}
 
     # Validation set: analysis forecasts in the newest part of the window.
@@ -133,6 +136,9 @@ def report_by_variable(
         (s.provider, s.cell_key, s.variable, s.horizon_h): s
         for s in learn_stats(residuals)
     }
+    cells = storage.get_cells()
+    if cells:
+        stats = spatial_stats(stats, cells)
     kinds = {p.name: p.kind for p in storage.get_providers()}
 
     forecasts = storage.forecasts_in_window(

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from ..config import Config
-from ..models import ForecastSample
+from ..models import Cell, ForecastSample
 
 # Baseline weight per provider kind when no residual history exists yet.
 _KIND_BASE_WEIGHT = {"model": 1.0, "station": 2.0}
@@ -59,6 +59,87 @@ def horizon_bucket(
     if h <= 72:
         return 48.0
     return 120.0
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in kilometers between two points."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def spatial_stats(
+    stats: dict[tuple[str, str, str, float], ProviderStat],
+    cells: list[Cell],
+    sigma_km: float = 30.0,
+) -> dict[tuple[str, str, str, float], ProviderStat]:
+    """Interpolate stats across cells so every cell has a calibration prior.
+
+    A cell with no learned stats for a (provider, variable, horizon) borrows
+    the inverse-distance-weighted stats of its neighbors (Gaussian kernel with
+    `sigma_km` range). A cell with few samples blends its own stats with the
+    spatial prior so early predictions are not overfit to a handful of hours.
+    Returns a new dict; cells with no neighbors keep their entries as-is.
+    """
+    # Group stats by (provider, variable, horizon) across cells.
+    keys_by_group: dict[tuple[str, str, float], list[tuple[str, ProviderStat]]] = {}
+    for key, s in stats.items():
+        group = (key[0], key[2], key[3])
+        keys_by_group.setdefault(group, []).append((key[1], s))
+
+    positions = {c.key: (c.lat, c.lon) for c in cells}
+    out = dict(stats)
+
+    for group, entries in keys_by_group.items():
+        provider, variable, horizon = group
+        # Cells with solid learned stats for this group.
+        solid = {cell_key for cell_key, s in entries if s.samples >= 3}
+        for cell in cells:
+            own = next((s for ck, s in entries if ck == cell.key), None)
+            if own is not None and own.samples >= 3:
+                continue
+            # Inverse-distance Gaussian weights over neighbor cells.
+            lat, lon = cell.lat, cell.lon
+            weights: list[tuple[float, ProviderStat]] = []
+            for cell_key, s in entries:
+                if cell_key == cell.key or cell_key not in positions:
+                    continue
+                plat, plon = positions[cell_key]
+                d = _haversine_km(lat, lon, plat, plon)
+                w = math.exp(-(d * d) / (2.0 * sigma_km * sigma_km))
+                if w > 1e-3:
+                    weights.append((w, s))
+            if not weights:
+                continue
+            total = sum(w for w, _s in weights)
+            bias = sum(w * s.bias for w, s in weights) / total
+            # Blend rmse via squared weights to keep spread meaningful.
+            rmse = math.sqrt(
+                sum(w * s.rmse * s.rmse for w, s in weights) / total
+            )
+            samples = int(round(sum(w * s.samples for w, s in weights) / total))
+            # Blend the cell's own few-sample stat with the spatial prior.
+            if own is not None and own.samples > 0:
+                own_w = own.samples / (own.samples + total)
+                bias = own_w * own.bias + (1 - own_w) * bias
+                rmse = math.sqrt(
+                    own_w * own.rmse**2 + (1 - own_w) * rmse**2
+                )
+                samples = own.samples + samples
+            out[(provider, cell.key, variable, horizon)] = ProviderStat(
+                provider=provider,
+                cell_key=cell.key,
+                variable=variable,
+                horizon_h=horizon,
+                samples=max(samples, 1),
+                bias=bias,
+                rmse=rmse,
+                updated_at=max((s.updated_at for _w, s in weights)),
+            )
+    return out
 
 
 def _inverse_variance_weight(rmse: float, samples: int) -> float:

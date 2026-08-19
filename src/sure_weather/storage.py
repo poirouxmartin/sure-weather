@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import ForecastSample, Observation, Provider, Residual
+from .models import Cell, ForecastSample, Observation, Provider, Residual
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
@@ -116,6 +116,10 @@ class Storage:
                 "ON CONFLICT(key) DO NOTHING",
                 cells,
             )
+
+    def get_cells(self) -> list[Cell]:
+        rows = self._conn.execute("SELECT key, lat, lon FROM cells").fetchall()
+        return [Cell(key=r[0], lat=r[1], lon=r[2]) for r in rows]
 
     # ---- observations ----
 

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from .calibration import learn_stats
 from .config import Config
-from .fusion import ProviderStat, fuse, horizon_bucket
+from .fusion import ProviderStat, fuse, horizon_bucket, spatial_stats
 from .grid import cell_from_point, iter_cells_nearby
 from .models import ALL_VARIABLES, Observation, Variable
 from .storage import Storage
@@ -18,15 +18,19 @@ class WeatherService:
         self.config = config
 
     def _load_stats(self) -> dict[tuple[str, str, str, float], ProviderStat]:
-        """Materialize learned stats into a lookup dict."""
+        """Materialize learned stats, spatially interpolated across cells."""
         stats: dict[tuple[str, str, str, float], ProviderStat] = {}
         # Stats are recomputed from residuals each time calibration runs; here we
         since = datetime.now(timezone.utc) - timedelta(
             days=self.config.residual_window_days
         )
         residuals = self.storage.residuals_window(None, None, since)
-        for s in learn_stats(residuals):
+        learned = learn_stats(residuals)
+        for s in learned:
             stats[(s.provider, s.cell_key, s.variable, s.horizon_h)] = s
+        cells = self.storage.get_cells()
+        if cells:
+            stats = spatial_stats(stats, cells)
         return stats
 
     def forecast(self, lat: float, lon: float, hours: int = 48) -> dict:
