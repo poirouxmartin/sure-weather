@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_config
 from .service import WeatherService
 from .storage import Storage
+from .tiles import render_tile
 
 app = FastAPI(title="Sure Weather", version="0.1.0")
 _config = load_config()
@@ -87,6 +88,33 @@ def radar() -> dict:
         return r.json()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"radar upstream: {exc}") from exc
+
+
+@app.get("/tile/{layer}/{z}/{x}/{y}.png")
+def tile(layer: str, z: int, x: int, y: int) -> Response:
+    """Raster overlay tile (temperature or precipitation) from the Open-Meteo model.
+
+    Open-Meteo no longer serves plain XYZ weather tiles (its current format is
+    a WASM-decoded `om://` protocol, too heavy for this vanilla front-end).
+    Instead the backend samples the multi-location forecast API on a grid over
+    each tile, colorizes the result and returns a small PNG. Rendered tiles are
+    cached in memory for a few minutes, so panning reuses the same requests.
+    """
+    if layer not in ("temp", "precip"):
+        raise HTTPException(status_code=404, detail=f"unknown layer {layer!r}")
+    if not (3 <= z <= 12):
+        raise HTTPException(status_code=404, detail="zoom out of range")
+    n = 1 << z
+    if not (0 <= x < n and 0 <= y < n):
+        raise HTTPException(status_code=404, detail="tile out of range")
+    data = render_tile(layer, z, x, y)
+    if data is None:
+        raise HTTPException(status_code=502, detail="tile upstream unavailable")
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=600"},
+    )
 
 
 _web_dir = Path(__file__).parent / "web"

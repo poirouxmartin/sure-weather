@@ -287,6 +287,7 @@ function render(data) {
   // tiles (gray map). Initialize lazily here and refresh size each render.
   initMap();
   if (map) setTimeout(() => map.invalidateSize(), 50);
+  applyMapLayer();
 
   renderFavorites();
 
@@ -568,11 +569,13 @@ $("#range-seg").addEventListener("click", (e) => {
 
 let map = null;
 let radarLayer = null;
+let modelLayer = null;
 let marker = null;
 let radarFrames = [];
 let radarPlaying = false;
 let radarTimer = null;
 let radarIdx = 0;
+let mapLayer = "radar";
 
 function initMap() {
   if (map || !window.L) return;
@@ -617,7 +620,7 @@ async function loadRadar() {
       slider.step = 1;
       slider.value = radarFrames.length - 1;
     }
-    if (!radarPlaying) showRadarFrame(radarFrames.length - 1);
+    if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
   } catch (e) {
     status.textContent = "radar indisponible";
   }
@@ -685,6 +688,45 @@ function centerMapOn(lat, lon, name) {
     marker.setPopupContent(`<b>${name}</b>`);
   }
 }
+
+/* Switch the map overlay: live radar, Open-Meteo model tiles (temperature /
+   precipitation), or plain streets (no overlay). Model tiles are rendered
+   server-side from the model API and cached, so panning is cheap. */
+function applyMapLayer() {
+  if (radarLayer) {
+    map.removeLayer(radarLayer);
+    radarLayer = null;
+  }
+  if (modelLayer) {
+    map.removeLayer(modelLayer);
+    modelLayer = null;
+  }
+  const isRadar = mapLayer === "radar";
+  // The radar timeline + play button only make sense on the live radar layer.
+  el("radar-play").hidden = !isRadar;
+  el("radar-slider").parentElement.hidden = !isRadar;
+  el("radar-status").textContent = "";
+  if (isRadar) {
+    if (radarFrames.length) showRadarFrame(radarFrames.length - 1);
+    return;
+  }
+  if (mapLayer === "streets") {
+    el("radar-status").textContent = "plan (rues)";
+    return;
+  }
+  const label = mapLayer === "temp" ? "température (modèle)" : "précipitation (modèle)";
+  el("radar-status").textContent = label;
+  modelLayer = L.tileLayer(`/tile/${mapLayer}/{z}/{x}/{y}.png`, {
+    opacity: 0.85,
+    maxNativeZoom: 9, // model grid ~11 km: beyond z9 the backend upscales
+    maxZoom: 18,
+  }).addTo(map);
+}
+
+$("#map-layer").addEventListener("change", (e) => {
+  mapLayer = e.target.value;
+  applyMapLayer();
+});
 
 $("#radar-play").addEventListener("click", toggleRadarPlay);
 
