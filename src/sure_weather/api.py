@@ -31,6 +31,46 @@ def weather(
     return _service.forecast(lat, lon, hours=hours)
 
 
+@app.get("/geocode")
+def geocode(q: str = Query(..., min_length=2), limit: int = Query(5, ge=1, le=10)) -> dict:
+    """Forward an address/city query to Nominatim (OpenStreetMap).
+
+    Open-Meteo's geocoder only knows cities; an exact street address needs a
+    full address geocoder. Nominatim is proxied here so the browser gets a
+    same-origin call, a proper User-Agent is sent (their usage policy), and
+    results can be cached server-side. Returns a list of candidate points with
+    precise lat/lon, which the weather service then uses to target the closest
+    local METAR stations.
+    """
+    try:
+        r = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": q,
+                "format": "json",
+                "limit": limit,
+                "addressdetails": 0,
+                "accept-language": "fr",
+                "extratags": 0,
+            },
+            headers={"User-Agent": "sure-weather/0.1 (weather forecast app)"},
+            timeout=15,
+        )
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"geocode upstream: {exc}") from exc
+    results = [
+        {
+            "lat": float(item["lat"]),
+            "lon": float(item["lon"]),
+            "name": item.get("display_name", q),
+            "type": item.get("type", ""),
+        }
+        for item in r.json()
+    ]
+    return {"results": results}
+
+
 @app.get("/radar")
 def radar() -> dict:
     """Proxy to RainViewer's radar frame index (past + nowcast, free, keyless).

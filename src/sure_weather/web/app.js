@@ -47,6 +47,85 @@ const VAR_ORDER = [
 let state = { lat: 48.8566, lon: 2.3522, hours: 24, name: "Paris" };
 let reqToken = 0;
 
+/* ---- Favorites (localStorage) ---- */
+const FAV_KEY = "sure-weather-favorites";
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAV_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavorites(list) {
+  try {
+    localStorage.setItem(FAV_KEY, JSON.stringify(list));
+  } catch {
+    /* storage unavailable (private mode): favorites just don't persist */
+  }
+}
+
+function isFavorite(lat, lon) {
+  return loadFavorites().some((f) => Math.abs(f.lat - lat) < 1e-4 && Math.abs(f.lon - lon) < 1e-4);
+}
+
+function toggleFavorite() {
+  let list = loadFavorites();
+  const idx = list.findIndex((f) => Math.abs(f.lat - state.lat) < 1e-4 && Math.abs(f.lon - state.lon) < 1e-4);
+  if (idx >= 0) {
+    list.splice(idx, 1);
+  } else {
+    list.unshift({ lat: state.lat, lon: state.lon, name: state.name });
+  }
+  saveFavorites(list);
+  renderFavorites();
+}
+
+function renderFavorites() {
+  const list = loadFavorites();
+  const wrap = el("fav-list");
+  const btn = el("fav-btn");
+  if (btn) {
+    const active = isFavorite(state.lat, state.lon);
+    btn.classList.toggle("fav--active", active);
+    btn.title = active ? "Retirer des favoris" : "Ajouter aux favoris";
+    btn.innerHTML = active ? "★" : "☆";
+  }
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!list.length) {
+    const empty = document.createElement("li");
+    empty.className = "fav__empty";
+    empty.textContent = "Aucun favori — cliquez sur ☆ pour enregistrer un lieu";
+    wrap.appendChild(empty);
+    return;
+  }
+  for (const f of list) {
+    const li = document.createElement("li");
+    const a = document.createElement("button");
+    a.type = "button";
+    a.className = "fav__item";
+    a.textContent = f.name;
+    a.addEventListener("click", async () => {
+      state.lat = f.lat;
+      state.lon = f.lon;
+      state.name = f.name;
+      closeFavorites();
+      await loadForecast();
+    });
+    li.appendChild(a);
+    wrap.appendChild(li);
+  }
+}
+
+function closeFavorites() {
+  const menu = el("fav-menu");
+  if (menu) menu.hidden = true;
+}
+
 const $ = (s) => document.querySelector(s);
 const el = (id) => document.getElementById(id);
 const hide = (n) => (n.hidden = true);
@@ -118,12 +197,25 @@ async function geocode(query) {
       return { lat, lon, name: `${lat.toFixed(4)}, ${lon.toFixed(4)}` };
     }
   }
+  // Open-Meteo knows cities; fall back to Nominatim (via our /geocode proxy)
+  // for exact street addresses when the city search finds nothing.
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=fr&format=json`;
-  const r = await fetch(url);
-  const d = await r.json();
-  if (!d.results || !d.results.length) throw new Error("Ville introuvable");
-  const res = d.results[0];
-  return { lat: res.latitude, lon: res.longitude, name: res.name + (res.country ? `, ${res.country}` : "") };
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.results && d.results.length) {
+      const res = d.results[0];
+      return { lat: res.latitude, lon: res.longitude, name: res.name + (res.country ? `, ${res.country}` : "") };
+    }
+  } catch {
+    /* fall through to address geocoder */
+  }
+  const g = await fetch(`/geocode?q=${encodeURIComponent(query)}&limit=1`);
+  if (!g.ok) throw new Error(`adresse introuvable`);
+  const gd = await g.json();
+  if (!gd.results || !gd.results.length) throw new Error("Lieu introuvable");
+  const hit = gd.results[0];
+  return { lat: hit.lat, lon: hit.lon, name: hit.name };
 }
 
 function locateMe() {
@@ -195,6 +287,8 @@ function render(data) {
   // tiles (gray map). Initialize lazily here and refresh size each render.
   initMap();
   if (map) setTimeout(() => map.invalidateSize(), 50);
+
+  renderFavorites();
 
   const fc = data.forecast;
   const byTime = {};
@@ -448,6 +542,13 @@ $("#locate-btn").addEventListener("click", async () => {
   }
 });
 
+$("#fav-btn").addEventListener("click", toggleFavorite);
+
+$("#fav-open").addEventListener("click", () => {
+  const menu = el("fav-list");
+  menu.hidden = !menu.hidden;
+});
+
 $("#range-seg").addEventListener("click", (e) => {
   const btn = e.target.closest(".seg__btn");
   if (!btn) return;
@@ -561,5 +662,6 @@ $("#radar-play").addEventListener("click", toggleRadarPlay);
 
 /* Boot */
 loadForecast();
+renderFavorites();
 // The map and radar initialize inside render(), once `#content` is visible:
 // Leaflet needs a non-zero container to fetch tiles (no gray map).

@@ -25,9 +25,16 @@
         <button class="btn btn--ghost" id="locate-btn" type="button" title="Me localiser">
           <span class="ic">📍</span>
         </button>
+        <div class="fav" id="fav-menu">
+          <button class="btn btn--ghost" id="fav-open" type="button" title="Mes favoris">
+            <span class="ic">🔖</span>
+            <span>Favoris</span>
+          </button>
+          <ul class="fav__menu" id="fav-list" hidden></ul>
+        </div>
         <form class="search" id="search-form" autocomplete="off">
           <input class="search__input" id="search-input" type="search"
-                 placeholder="Ville, ou lat, lon…" />
+                 placeholder="Ville, adresse, ou lat, lon…" />
           <button class="btn btn--primary" type="submit">Rechercher</button>
         </form>
       </div>
@@ -48,7 +55,10 @@
       <section class="hero">
         <div class="hero__sky" id="sky-icon" aria-hidden="true">☀️</div>
         <div>
-          <h1 class="hero__name" id="loc-name">—</h1>
+          <h1 class="hero__name">
+            <span id="loc-name">—</span>
+            <button class="fav__toggle" id="fav-btn" type="button" title="Ajouter aux favoris">☆</button>
+          </h1>
           <p class="hero__meta" id="loc-meta"></p>
           <p class="hero__summary" id="loc-summary"></p>
         </div>
