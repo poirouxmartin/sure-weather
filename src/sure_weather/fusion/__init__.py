@@ -245,7 +245,7 @@ def _fuse_one(
     med = _weighted_median(raw, weights) if weights.sum() > 0 else float(np.median(raw))
     spread = _mad(raw) or float(np.std(raw)) or 1.0
     dev = np.abs(raw - med)
-    keep = dev <= 4.0 * spread  # very conservative outlier gate
+    keep = dev <= 3.0 * spread  # robust outlier gate: 3*MAD keeps honest spread
     if 2 <= keep.sum() < len(raw):
         raw = raw[keep]
         weights = weights[keep]

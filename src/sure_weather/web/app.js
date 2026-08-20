@@ -445,6 +445,9 @@ function renderHours(times, byTime) {
     const temp = row.temperature_2m;
     const prob = row.precipitation_probability;
     const wind = row.wind_speed_10m;
+    const gust = row.wind_gusts_10m;
+    const cloud = row.cloud_cover;
+    const humid = row.relative_humidity_2m;
     const confs = VAR_ORDER.filter((v) => row[v] && row[v].calibrated).map((v) => row[v].confidence);
     const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
     const cal = !!(row.temperature_2m && row.temperature_2m.calibrated);
@@ -456,7 +459,8 @@ function renderHours(times, byTime) {
       <div class="hour__ic">${wk.icon}</div>
       <div class="hour__temp">${temp ? rangeText(temp) + "°" : "—"}</div>
       <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
-      <div class="hour__row">${wind ? `🌬 ${rangeText(wind)} m/s` : ""}</div>
+      <div class="hour__row">${wind ? `🌬 ${rangeText(wind)} m/s` : ""}${gust ? ` · raf. ${rangeText(gust)}` : ""}</div>
+      <div class="hour__row">${cloud ? `☁️ ${rangeText(cloud, 0)}%` : ""}${humid ? ` · 💧 ${round(humid.value, 0)}%` : ""}</div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
@@ -504,9 +508,11 @@ function renderTable(times, byTime) {
       <td>${row.dew_point_2m ? round(row.dew_point_2m.value) + "°" : "—"}</td>
       <td>${row.precipitation_probability ? round(row.precipitation_probability.value, 0) + "%" : "—"}</td>
       <td>${row.wind_speed_10m ? rangeText(row.wind_speed_10m) + " m/s" : "—"}</td>
+      <td>${row.wind_gusts_10m ? rangeText(row.wind_gusts_10m) + " m/s" : "—"}</td>
       <td>${row.relative_humidity_2m ? round(row.relative_humidity_2m.value, 0) + "%" : "—"}</td>
       <td>${row.cloud_cover ? rangeText(row.cloud_cover, 0) + "%" : "—"}</td>
-      <td>${row.pressure_msl ? round(row.pressure_msl.value, 0) + " hPa" : "—"}</td>`;
+      <td>${row.pressure_msl ? round(row.pressure_msl.value, 0) + " hPa" : "—"}</td>
+      <td>${row.visibility ? (row.visibility.value >= 10000 ? "≥10 km" : round(row.visibility.value / 1000, 1) + " km") : "—"}</td>`;
     tb.appendChild(tr);
   }
 }
@@ -583,6 +589,7 @@ function initMap() {
     fillOpacity: 0.9,
   }).addTo(map);
   marker.bindPopup(`<b>${state.name}</b>`);
+  map.on("click", onMapClick);
 }
 
 async function loadRadar() {
@@ -600,8 +607,16 @@ async function loadRadar() {
       host: d.host,
       path: f.path,
       time: f.time,
+      isNowcast: (f.path || "").includes("nowcast"),
     }));
-    status.textContent = `radar live · ${new Date(radarFrames[radarFrames.length - 1].time * 1000).toLocaleTimeString("fr-FR")}`;
+    // Bind the timeline scrubber once frames are known.
+    const slider = el("radar-slider");
+    if (slider) {
+      slider.max = radarFrames.length - 1;
+      slider.min = 0;
+      slider.step = 1;
+      slider.value = radarFrames.length - 1;
+    }
     if (!radarPlaying) showRadarFrame(radarFrames.length - 1);
   } catch (e) {
     status.textContent = "radar indisponible";
@@ -613,21 +628,24 @@ function showRadarFrame(idx) {
   radarIdx = ((idx % radarFrames.length) + radarFrames.length) % radarFrames.length;
   const f = radarFrames[radarIdx];
   if (radarLayer) map.removeLayer(radarLayer);
+  // maxNativeZoom=7 upscales the native z7 tile at any deeper zoom, and
+  // noWrap stops Leaflet from tiling the same radar frame repeatedly across
+  // the map (the "same thing at different places" bug).
   const RadarLayer = L.TileLayer.extend({
     getTileUrl(coords) {
-      // RainViewer's free tier only serves radar tiles up to zoom 7; z8+
-      // returns a "Zoom Level Not Supported" placeholder PNG. Clamp to z7 so
-      // Leaflet upscales the native tile at any deeper zoom (blurry-but-real
-      // radar, like every other map), and skip below z5 where the CDN 404s.
       const z = Math.max(5, Math.min(coords.z, 7));
       const scale = Math.pow(2, coords.z - z);
       return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
     },
   });
-  radarLayer = new RadarLayer({ opacity: 0.75 }).addTo(map);
+  radarLayer = new RadarLayer({ opacity: 0.75, maxNativeZoom: 7, noWrap: true }).addTo(map);
   const t = new Date(f.time * 1000);
-  const label = `${t.toLocaleTimeString("fr-FR")}${f.path.includes("nowcast") ? " (prévision)" : ""}`;
+  const label = `${t.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} ${t.toLocaleTimeString("fr-FR")}${f.isNowcast ? " (prévision)" : ""}`;
   el("radar-status").textContent = `radar ${label}`;
+  const slider = el("radar-slider");
+  if (slider) slider.value = radarIdx;
+  const tinfo = el("radar-time");
+  if (tinfo) tinfo.textContent = t.toLocaleTimeString("fr-FR");
 }
 
 function toggleRadarPlay() {
@@ -636,17 +654,27 @@ function toggleRadarPlay() {
     radarPlaying = false;
     clearInterval(radarTimer);
     el("radar-play").textContent = "▶ Lecture";
-    showRadarFrame(radarFrames.length - 1);
   } else {
     radarPlaying = true;
     el("radar-play").textContent = "⏸ Pause";
-    radarIdx = radarFrames.length - 1;
+    if (radarIdx >= radarFrames.length - 1) radarIdx = 0; // start from the oldest
     showRadarFrame(radarIdx);
     radarTimer = setInterval(() => {
       radarIdx = (radarIdx + 1) % radarFrames.length;
       showRadarFrame(radarIdx);
     }, 500);
   }
+}
+
+/* Clicking anywhere on the map loads the forecast for that precise point:
+   a station street corner, a valley, the coast — wherever you point. */
+async function onMapClick(e) {
+  const lat = +e.latlng.lat.toFixed(4);
+  const lon = +e.latlng.lng.toFixed(4);
+  state.lat = lat;
+  state.lon = lon;
+  state.name = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  await loadForecast();
 }
 
 function centerMapOn(lat, lon, name) {
@@ -659,6 +687,16 @@ function centerMapOn(lat, lon, name) {
 }
 
 $("#radar-play").addEventListener("click", toggleRadarPlay);
+
+$("#radar-slider").addEventListener("input", (e) => {
+  // Dragging the timeline scrubs to an exact radar frame: pause playback so
+  // the animation doesn't fight the user's hand.
+  radarPlaying = false;
+  clearInterval(radarTimer);
+  const btn = el("radar-play");
+  if (btn) btn.textContent = "▶ Lecture";
+  showRadarFrame(parseInt(e.target.value, 10));
+});
 
 /* Boot */
 loadForecast();

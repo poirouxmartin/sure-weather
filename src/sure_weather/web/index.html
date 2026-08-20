@@ -98,11 +98,16 @@
         </div>
         <p class="card__hint">
           Précipitations en temps réel (radar, ~1 km) autour du point — la météo
-          n'est pas la même à 1 km d'ici.
+          n'est pas la même à 1 km d'ici. Cliquez sur la carte pour consulter un
+          point précis, ou déplacez le curseur pour remonter le temps.
         </p>
         <div id="map"></div>
         <div class="map__controls">
           <button class="btn btn--ghost" id="radar-play" type="button">▶ Lecture</button>
+          <div class="map__timeline">
+            <span class="map__time" id="radar-time">—</span>
+            <input type="range" id="radar-slider" min="0" max="1" value="1" aria-label="Ligne de temps radar" />
+          </div>
           <label class="map__layers">
             <select id="map-layer">
               <option value="radar">Radar pluie (live)</option>
@@ -141,9 +146,11 @@
                 <th>Pt rosée</th>
                 <th>Pluie (prob.)</th>
                 <th>Vent</th>
+                <th>Rafales</th>
                 <th>Humid</th>
                 <th>Nébulo</th>
                 <th>Pression</th>
+                <th>Visibilité</th>
               </tr>
             </thead>
             <tbody id="table-body"></tbody>
