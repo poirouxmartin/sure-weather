@@ -514,9 +514,13 @@ function showRadarFrame(idx) {
   if (radarLayer) map.removeLayer(radarLayer);
   const RadarLayer = L.TileLayer.extend({
     getTileUrl(coords) {
-      const n = Math.pow(2, coords.z);
-      if (coords.z < 8) return L.Util.emptyImageUrl;
-      return `${f.host}${f.path}/256/${coords.z}/${coords.x}/${coords.y}.png`;
+      // RainViewer's free tier only serves radar tiles up to zoom 7; z8+
+      // returns a "Zoom Level Not Supported" placeholder PNG. Clamp to z7 so
+      // Leaflet upscales the native tile at any deeper zoom (blurry-but-real
+      // radar, like every other map), and skip below z5 where the CDN 404s.
+      const z = Math.max(5, Math.min(coords.z, 7));
+      const scale = Math.pow(2, coords.z - z);
+      return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
     },
   });
   radarLayer = new RadarLayer({ opacity: 0.75 }).addTo(map);
