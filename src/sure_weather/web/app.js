@@ -143,10 +143,28 @@ async function loadForecast() {
   const token = ++reqToken;
   show(el("loading"));
   hide(el("error"));
+  const spinner = el("loading");
+  const tip = spinner.querySelector("span");
+  const status = spinner.querySelector("#load-status");
+  if (tip) tip.textContent = "Calcul de la confiance…";
+  if (status) status.textContent = "";
+  // Progress feedback: a brand-new zone needs a 3-month backfill on first
+  // visit (model analysis + reanalysis), which legitimately takes tens of
+  // seconds. Tell the user it's working instead of leaving a silent spinner.
+  const progress = [
+    "découverte des sources locales…",
+    "récupération de 3 mois d'archives (1ère visite)…",
+    "calibration de la confiance…",
+  ];
+  let i = 0;
+  const tick = setInterval(() => {
+    if (status && i < progress.length) status.textContent = progress[i++];
+  }, 6000);
   try {
     const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`);
     if (!r.ok) throw new Error(`API ${r.status}`);
     const data = await r.json();
+    clearInterval(tick);
     if (token !== reqToken) return;
     if (!data.forecast || !data.forecast.length) {
       hide(el("loading"));
@@ -156,6 +174,7 @@ async function loadForecast() {
     }
     render(data);
   } catch (e) {
+    clearInterval(tick);
     if (token !== reqToken) return;
     hide(el("loading"));
     hide(el("content"));
@@ -170,6 +189,12 @@ function render(data) {
   hide(el("loading"));
   hide(el("empty"));
   show(el("content"));
+
+  // The map must be sized *after* its container is visible: Leaflet
+  // initialized while `#content` is hidden gets 0 height and never fetches
+  // tiles (gray map). Initialize lazily here and refresh size each render.
+  initMap();
+  if (map) setTimeout(() => map.invalidateSize(), 50);
 
   const fc = data.forecast;
   const byTime = {};
@@ -532,5 +557,5 @@ $("#radar-play").addEventListener("click", toggleRadarPlay);
 
 /* Boot */
 loadForecast();
-initMap();
-loadRadar();
+// The map and radar initialize inside render(), once `#content` is visible:
+// Leaflet needs a non-zero container to fetch tiles (no gray map).

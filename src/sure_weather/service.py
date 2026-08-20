@@ -17,7 +17,7 @@ from .fusion import (
     horizon_bucket,
     spatial_stats,
 )
-from .grid import cell_from_point
+from .grid import cell_from_point, iter_cells_nearby
 from .models import (
     ALL_VARIABLES,
     OBSERVABLE_VARIABLES,
@@ -140,18 +140,39 @@ class WeatherService:
                     hours=1
                 ):
                     self._ingest_nearby_stations(lat, lon)
+            # Refresh the model run if the stored one no longer reaches into
+            # the future (e.g. a backfill that only fetched 1 forecast day, or
+            # a run that simply aged out). Otherwise the window filter in
+            # forecast() drops every result and the zone shows "no data".
+            self._refresh_model_run_if_stale(center)
             return
         for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
             self.storage.upsert_provider(Provider(name=m, kind="model"))
         self.storage.upsert_cells([(center.key, center.lat, center.lon)])
 
         collector = OpenMeteoCollector(self.config)
-        samples = collector.fetch_forecast(center, forecast_days=1, past_days=92)
-        self.storage.insert_forecasts(samples)
+
+        # The 92-day model forecast and the reanalysis archive are independent
+        # heavy HTTP requests: fetch them concurrently to cut the first-visit
+        # latency of a brand-new zone roughly in half.
+        from concurrent.futures import ThreadPoolExecutor
 
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=92)
-        obs = collector.fetch_historical(center, start, end)
+
+        def _fetch_forecast():
+            return collector.fetch_forecast(center, forecast_days=1, past_days=92)
+
+        def _fetch_historical():
+            return collector.fetch_historical(center, start, end)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_fc = pool.submit(_fetch_forecast)
+            f_obs = pool.submit(_fetch_historical)
+            samples = f_fc.result()
+            obs = f_obs.result()
+
+        self.storage.insert_forecasts(samples)
         self.storage.insert_observations(obs)
 
         forecasts = self.storage.forecasts_in_window(
@@ -168,6 +189,30 @@ class WeatherService:
         # many sources as possible in the corner" promise. Their observations
         # feed the live consensus and the station-first residual matching.
         self._ingest_nearby_stations(lat, lon)
+
+    def _refresh_model_run_if_stale(self, center: Cell) -> None:
+        """Re-collect a fast 7-day forecast when the stored run is stale.
+
+        A cell whose newest run no longer covers the future (old backfill with
+        forecast_days=1, or a run that aged out) must be refreshed on demand,
+        otherwise the window filter leaves the zone with no data. Fetching a
+        fresh forecast_days=7 run is a single fast network round-trip per cell.
+        """
+        now = datetime.now(timezone.utc)
+        future = self.storage._conn.execute(
+            "SELECT COUNT(*) FROM forecasts WHERE cell_key=? AND valid_at > ?",
+            (center.key, (now + timedelta(hours=3)).isoformat()),
+        ).fetchone()
+        if future and future[0] > 0:
+            return
+        try:
+            collector = OpenMeteoCollector(self.config)
+            samples = collector.fetch_forecast(center, forecast_days=7)
+            self.storage.insert_forecasts(samples)
+        except Exception:
+            # Best-effort: a stale run is better than an empty forecast only
+            # marginally; never break the request over a refresh failure.
+            return
 
     def _ingest_nearby_stations(self, lat: float, lon: float) -> None:
         """Fetch recent METAR reports near (lat, lon) and store observations."""
@@ -204,21 +249,14 @@ class WeatherService:
         forecasts: stations have a higher base weight and lower prior noise than
         global models, so the "now" consensus leans toward the real thermometer.
         """
-        cells_near = [c for c in self.storage.get_cells()]
+        cells_near = [
+            c.key
+            for c in iter_cells_nearby(lat, lon, self.config.obs_search_radius_km, self.config)
+        ]
         if not cells_near:
             return []
-        from .grid import haversine_km
-
-        # Only cells within the station search radius around the point.
-        near = [
-            c
-            for c in cells_near
-            if haversine_km(lat, lon, c.lat, c.lon) <= self.config.obs_search_radius_km
-        ]
-        if not near:
-            return []
         obs = self.storage.observations_in_window(
-            [c.key for c in near],
+            cells_near,
             list(OBSERVABLE_VARIABLES),
             since,
         )
