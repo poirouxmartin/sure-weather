@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
-from .calibration import compute_residuals, learn_stats
+from .calibration import compute_residuals
 from .collectors import (
     ARCHIVE_MODELS,
     FORECAST_MODELS,
@@ -91,7 +92,9 @@ class WeatherService:
         """Materialize learned stats, spatially interpolated across cells.
 
         Cached until the residual pool changes (new residuals from a
-        collect/calibrate cycle invalidate the fingerprint).
+        collect/calibrate cycle invalidate the fingerprint). The aggregation
+        itself runs inside SQLite (GROUP BY over the residual window) so a
+        cold start stays fast even with millions of stored residuals.
         """
         since = datetime.now(timezone.utc) - timedelta(
             days=self.config.residual_window_days
@@ -100,10 +103,20 @@ class WeatherService:
         if self._stats is not None and fp == self._stats_fingerprint:
             return self._stats
         stats: dict[tuple[str, str, str, float], ProviderStat] = {}
-        residuals = self.storage.residuals_window(None, None, since)
-        learned = learn_stats(residuals)
-        for s in learned:
-            stats[(s.provider, s.cell_key, s.variable, s.horizon_h)] = s
+        now = datetime.now(timezone.utc)
+        for provider, cell_key, variable, horizon_h, samples, bias, mse in (
+            self.storage.residual_bias_stats(since)
+        ):
+            stats[(provider, cell_key, variable, horizon_h)] = ProviderStat(
+                provider=provider,
+                cell_key=cell_key,
+                variable=variable,
+                horizon_h=horizon_h,
+                samples=samples,
+                bias=float(bias),
+                rmse=math.sqrt(mse) if mse is not None else 0.0,
+                updated_at=now,
+            )
         cells = self.storage.get_cells()
         if cells:
             stats = spatial_stats(stats, cells)

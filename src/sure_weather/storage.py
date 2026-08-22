@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS residuals (
     PRIMARY KEY (provider, cell_key, variable, valid_at)
 );
 CREATE INDEX IF NOT EXISTS idx_res_provider ON residuals(provider, cell_key, variable, valid_at);
+CREATE INDEX IF NOT EXISTS idx_res_valid ON residuals(valid_at);
 """
 
 
@@ -273,6 +274,25 @@ class Storage:
         ]
 
     # ---- residuals ----
+
+    def residual_bias_stats(
+        self, since: datetime
+    ) -> list[tuple[str, str, str, float, int, float, float]]:
+        """SQL-side aggregation of residual biases.
+
+        Groups the whole residual window in one pass inside SQLite (C speed)
+        instead of materializing millions of Residual objects in Python:
+        per (provider, cell, variable, horizon) it returns sample count, mean
+        bias and mean squared bias (rmse is the square root of that).
+        """
+        sql = (
+            "SELECT provider, cell_key, variable, horizon_h, COUNT(*), "
+            "AVG(predicted - observed), "
+            "AVG((predicted - observed) * (predicted - observed)) "
+            "FROM residuals WHERE valid_at >= ? "
+            "GROUP BY provider, cell_key, variable, horizon_h"
+        )
+        return self._conn.execute(sql, (since.isoformat(),)).fetchall()
 
     def insert_residuals(self, residuals: Iterable[Residual]) -> int:
         rows = [

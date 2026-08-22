@@ -247,6 +247,8 @@ async function loadForecast() {
     "découverte des sources locales…",
     "récupération de 3 mois d'archives (1ère visite)…",
     "calibration de la confiance…",
+    "croisement des modèles et des stations…",
+    "encore un instant, la calibration est lourde…",
   ];
   let i = 0;
   const tick = setInterval(() => {

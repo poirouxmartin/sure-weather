@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,26 @@ app = FastAPI(title="Sure Weather", version="0.1.0")
 _config = load_config()
 _storage = Storage(_config.db_path)
 _service = WeatherService(_storage, _config)
+
+
+@app.on_event("startup")
+def _warm_stats_cache() -> None:
+    """Precompute calibration stats in the background at boot.
+
+    The first forecast after a restart would otherwise pay the residual
+    aggregation inside the user's request; warming it here keeps every
+    search snappy from the first one.
+    """
+
+    def _warm() -> None:
+        try:
+            _service._load_stats()
+        except Exception:
+            # A failed warm-up must not prevent serving: the request path
+            # will simply compute stats on demand.
+            pass
+
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 @app.get("/health")
