@@ -76,6 +76,12 @@ class Storage:
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
+        # Read-path tuning: a bigger page cache and memory-mapped I/O keep
+        # the hot queries (latest run per cell, residual aggregation) off the
+        # OS page cache round-trips.
+        self._conn.execute("PRAGMA cache_size=-16000;")  # ~16 MB
+        self._conn.execute("PRAGMA mmap_size=268435456;")  # 256 MB
+        self._conn.execute("PRAGMA temp_store=MEMORY;")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

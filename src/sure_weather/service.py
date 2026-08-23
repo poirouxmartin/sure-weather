@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from .calibration import compute_residuals
@@ -39,6 +41,12 @@ _SURE_VARIABLES = (
     "dew_point_2m",
     "precipitation_probability",
 )
+
+# Forecast responses are memoized for a few minutes: weather evolves slowly,
+# and repeat searches of the same zone (favorites, range switches, map
+# clicks nearby) must feel instant instead of re-running the fusion.
+_FC_TTL_S = 300.0
+_FC_CACHE_MAX = 64
 
 
 def _summarize(forecast: list[dict], hours: int) -> dict:
@@ -79,6 +87,33 @@ class WeatherService:
         self.config = config
         self._stats: dict[tuple[str, str, str, float], ProviderStat] | None = None
         self._stats_fingerprint: tuple[str, int] | None = None
+        self._fc_cache: dict[tuple[float, float, int], tuple[float, dict]] = {}
+        self._fc_lock = threading.Lock()
+
+    # ---- forecast response cache ----
+
+    def _forecast_cached(self, key: tuple[float, float, int]) -> dict | None:
+        with self._fc_lock:
+            hit = self._fc_cache.get(key)
+            if hit is None:
+                return None
+            ts, data = hit
+            if time.time() - ts > _FC_TTL_S:
+                self._fc_cache.pop(key, None)
+                return None
+            return data
+
+    def _forecast_store(self, key: tuple[float, float, int], data: dict) -> None:
+        with self._fc_lock:
+            if len(self._fc_cache) >= _FC_CACHE_MAX:
+                oldest = min(self._fc_cache, key=lambda k: self._fc_cache[k][0])
+                self._fc_cache.pop(oldest, None)
+            self._fc_cache[key] = (time.time(), data)
+
+    def _forecast_invalidate(self) -> None:
+        """Drop memoized responses after new forecast data is ingested."""
+        with self._fc_lock:
+            self._fc_cache.clear()
 
     def _residuals_fingerprint(self, since: datetime) -> tuple[str, int]:
         """Fingerprint of the residual pool used to invalidate the stats cache."""
@@ -187,6 +222,7 @@ class WeatherService:
 
         self.storage.insert_forecasts(samples)
         self.storage.insert_observations(obs)
+        self._forecast_invalidate()
 
         forecasts = self.storage.forecasts_in_window(
             [center.key], list(ALL_VARIABLES), start, end
@@ -222,6 +258,7 @@ class WeatherService:
             collector = OpenMeteoCollector(self.config)
             samples = collector.fetch_forecast(center, forecast_days=7)
             self.storage.insert_forecasts(samples)
+            self._forecast_invalidate()
         except Exception:
             # Best-effort: a stale run is better than an empty forecast only
             # marginally; never break the request over a refresh failure.
@@ -309,6 +346,10 @@ class WeatherService:
     def forecast(self, lat: float, lon: float, hours: int = 48) -> dict:
         """Return the fused forecast for a point, bucketed hourly."""
         now = datetime.now(timezone.utc)
+        key = (round(lat, 2), round(lon, 2), hours)
+        cached = self._forecast_cached(key)
+        if cached is not None:
+            return cached
         center = cell_from_point(lat, lon, self.config)
         self._ensure_cell_data(center, lat, lon)
         # Model forecasts are fetched per-cell; the fusion targets the point's
@@ -330,10 +371,14 @@ class WeatherService:
                 lat, lon, now - timedelta(hours=6)
             )
         )
+        # Fuse only the requested window: latest_forecasts returns every
+        # valid time of the stored run (~7 days), while the response covers
+        # `hours`. Filtering first cuts the fusion work by that ratio.
+        until = now + timedelta(hours=hours)
+        window_lo = now - timedelta(hours=1)
+        samples = [s for s in samples if window_lo <= s.valid_at <= until]
         results = fuse(samples, stats, kinds, self.config, now)
 
-        # Filter to the requested window and hour-bucket the output.
-        until = now + timedelta(hours=hours)
         out = []
         for r in results:
             if r.valid_at < now or r.valid_at > until:
@@ -360,10 +405,13 @@ class WeatherService:
                     "contributors": [p for p, _, _ in r.contributors],
                 }
             )
-        return {
+        payload = {
             "location": {"lat": lat, "lon": lon},
             "cell": center.key,
             "generated_at": now.isoformat(),
             "forecast": out,
             "summary": _summarize(out, hours),
         }
+        if out:
+            self._forecast_store(key, payload)
+        return payload

@@ -5,15 +5,18 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_config
+from .net import get_client
 from .service import WeatherService
 from .storage import Storage
 from .tiles import render_tile
 
 app = FastAPI(title="Sure Weather", version="0.1.0")
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 _config = load_config()
 _storage = Storage(_config.db_path)
 _service = WeatherService(_storage, _config)
@@ -65,7 +68,7 @@ def geocode(q: str = Query(..., min_length=2), limit: int = Query(5, ge=1, le=10
     local METAR stations.
     """
     try:
-        r = httpx.get(
+        r = get_client().get(
             "https://nominatim.openstreetmap.org/search",
             params={
                 "q": q,
@@ -102,7 +105,7 @@ def radar() -> dict:
     over a map. Proxying avoids CORS and keeps the tile host configurable.
     """
     try:
-        r = httpx.get(
+        r = get_client().get(
             "https://api.rainviewer.com/public/weather-maps.json", timeout=30
         )
         r.raise_for_status()

@@ -80,8 +80,9 @@ class OpenMeteoCollector:
     client: httpx.Client | None = None
 
     def _get(self, url: str, params: dict) -> dict:
-        client = self.client or httpx.Client(timeout=60)
-        resp = client.get(url, params=params)
+        from ..net import get_client
+
+        resp = get_client().get(url, params=params)
         resp.raise_for_status()
         try:
             return resp.json()

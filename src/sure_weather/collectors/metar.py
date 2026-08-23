@@ -144,8 +144,9 @@ class MetarCollector:
     client: httpx.Client | None = None
 
     def _get(self, params: dict) -> list[dict]:
-        client = self.client or httpx.Client(timeout=30)
-        resp = client.get(METAR_BASE, params=params)
+        from ..net import get_client
+
+        resp = get_client().get(METAR_BASE, params=params)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and data.get("error"):

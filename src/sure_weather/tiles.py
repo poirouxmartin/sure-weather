@@ -185,10 +185,11 @@ def render_tile(
     if cached is not None:
         return cached
     try:
-        r = httpx.get(
+        from .net import get_client
+
+        r = get_client().get(
             f"{base_url}/forecast",
             params=_build_request_params(z, x, y),
-            headers={"User-Agent": user_agent},
             timeout=30,
         )
         r.raise_for_status()

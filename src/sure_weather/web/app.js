@@ -578,6 +578,12 @@ let radarPlaying = false;
 let radarTimer = null;
 let radarIdx = 0;
 let mapLayer = "radar";
+// One TileLayer instance per frame, created lazily on first display and kept:
+// Leaflet caches a layer's tiles, so scrubbing back to an already-seen frame
+// is instant instead of refetching every tile (and flickering) like when a
+// fresh layer was built for every frame change.
+const radarLayerCache = {};
+let currentRadarIdx = -1;
 
 function initMap() {
   if (map || !window.L) return;
@@ -614,6 +620,13 @@ async function loadRadar() {
       time: f.time,
       isNowcast: (f.path || "").includes("nowcast"),
     }));
+    // Fresh frame index: cached layers point at stale tile paths.
+    for (const k of Object.keys(radarLayerCache)) {
+      const lyr = radarLayerCache[k];
+      if (lyr) map.removeLayer(lyr);
+      delete radarLayerCache[k];
+    }
+    currentRadarIdx = -1;
     // Bind the timeline scrubber once frames are known.
     const slider = el("radar-slider");
     if (slider) {
@@ -632,18 +645,27 @@ function showRadarFrame(idx) {
   if (!map || !radarFrames.length) return;
   radarIdx = ((idx % radarFrames.length) + radarFrames.length) % radarFrames.length;
   const f = radarFrames[radarIdx];
-  if (radarLayer) map.removeLayer(radarLayer);
   // maxNativeZoom=7 upscales the native z7 tile at any deeper zoom, and
   // noWrap stops Leaflet from tiling the same radar frame repeatedly across
   // the map (the "same thing at different places" bug).
-  const RadarLayer = L.TileLayer.extend({
-    getTileUrl(coords) {
-      const z = Math.max(5, Math.min(coords.z, 7));
-      const scale = Math.pow(2, coords.z - z);
-      return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
-    },
-  });
-  radarLayer = new RadarLayer({ opacity: 0.75, maxNativeZoom: 7, noWrap: true }).addTo(map);
+  if (radarLayerCache[currentRadarIdx] && currentRadarIdx !== radarIdx) {
+    map.removeLayer(radarLayerCache[currentRadarIdx]);
+  }
+  let layer = radarLayerCache[radarIdx];
+  if (!layer) {
+    const FrameLayer = L.TileLayer.extend({
+      getTileUrl(coords) {
+        const z = Math.max(5, Math.min(coords.z, 7));
+        const scale = Math.pow(2, coords.z - z);
+        return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
+      },
+    });
+    layer = new FrameLayer({ opacity: 0.75, maxNativeZoom: 7, noWrap: true });
+    radarLayerCache[radarIdx] = layer;
+  }
+  radarLayer = layer;
+  currentRadarIdx = radarIdx;
+  layer.addTo(map);
   const t = new Date(f.time * 1000);
   const label = `${t.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} ${t.toLocaleTimeString("fr-FR")}${f.isNowcast ? " (prévision)" : ""}`;
   el("radar-status").textContent = `radar ${label}`;
@@ -698,6 +720,7 @@ function applyMapLayer() {
   if (radarLayer) {
     map.removeLayer(radarLayer);
     radarLayer = null;
+    currentRadarIdx = -1;
   }
   if (modelLayer) {
     map.removeLayer(modelLayer);
