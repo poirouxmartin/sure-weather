@@ -316,16 +316,16 @@ function render(data) {
   el("sky-icon").textContent = wk.icon;
   document.body.dataset.sky = wk.sky;
   const t = nowRow.temperature_2m;
-  el("now-temp").textContent = t ? `${rangeText(t)}°` : "—";
-  el("now-feels").textContent = t
-    ? `Ressenti ${rangeText(t)}°` + (t.calibrated && t.confidence < 0.98 ? ` (±${round(t.tolerance)}°)` : "")
-    : "";
+  el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
+  el("now-range").textContent =
+    t && t.calibrated && t.confidence < 0.98 ? `fourchette ${round(t.low)}–${round(t.high)}°` : "";
+  el("now-feels").textContent = t ? `Ressenti ${rangeText(t)}°` : "";
   const det = [];
-  if (nowRow.wind_speed_10m) det.push(`Vent ${rangeText(nowRow.wind_speed_10m)} m/s`);
-  if (nowRow.relative_humidity_2m) det.push(`Humidité ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
+  if (nowRow.wind_speed_10m) det.push(`💨 ${rangeText(nowRow.wind_speed_10m)} m/s`);
+  if (nowRow.relative_humidity_2m) det.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
   if (nowRow.pressure_msl) det.push(`${rangeText(nowRow.pressure_msl, 0)} hPa`);
-  if (nowRow.precipitation_probability) det.push(`Pluie ${round(nowRow.precipitation_probability.value, 0)}%`);
-  el("now-details").innerHTML = det.map((d) => `<span>${d}</span>`).join("");
+  if (nowRow.precipitation_probability) det.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
+  el("now-details").innerHTML = det.map((d) => `<span class="chip">${d}</span>`).join("");
   const rainSum = fc.filter((i) => i.variable === "precipitation").reduce((a, i) => a + (i.value || 0), 0);
   const maxT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.max(a, i.value), -99);
   const minT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.min(a, i.value), 99);
@@ -442,6 +442,7 @@ function renderTimeline(times, byTime) {
 function renderHours(times, byTime) {
   const wrap = el("hours");
   wrap.innerHTML = "";
+  let lastDay = null;
   for (const t of times) {
     const row = byTime[t] || {};
     const wk = weatherKey({ ...row, time: t });
@@ -449,21 +450,32 @@ function renderHours(times, byTime) {
     const prob = row.precipitation_probability;
     const wind = row.wind_speed_10m;
     const gust = row.wind_gusts_10m;
-    const cloud = row.cloud_cover;
-    const humid = row.relative_humidity_2m;
     const confs = VAR_ORDER.filter((v) => row[v] && row[v].calibrated).map((v) => row[v].confidence);
     const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
     const cal = !!(row.temperature_2m && row.temperature_2m.calibrated);
+    // The date is shown once per day, not on every card: repeated labels
+    // turn the grid into noise.
+    const day = fmtDay(t);
+    const showDay = day !== lastDay;
+    lastDay = day;
+    const rng =
+      temp && temp.calibrated && temp.confidence < 0.98 && temp.low !== temp.high
+        ? `${round(temp.low, 0)}–${round(temp.high, 0)}°`
+        : "";
     const card = document.createElement("div");
     card.className = "hour";
     card.innerHTML = `
-      <div class="hour__time">${fmtTime(t)}</div>
-      <div class="hour__day">${fmtDay(t)}</div>
-      <div class="hour__ic">${wk.icon}</div>
-      <div class="hour__temp">${temp ? rangeText(temp) + "°" : "—"}</div>
+      <div class="hour__head">
+        <span class="hour__time">${fmtTime(t)}</span>
+        ${showDay ? `<span class="hour__day">${day}</span>` : ""}
+      </div>
+      <div class="hour__main">
+        <span class="hour__ic">${wk.icon}</span>
+        <span class="hour__temp">${temp ? round(temp.value) + "°" : "—"}</span>
+      </div>
+      <div class="hour__range">${rng}</div>
       <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
-      <div class="hour__row">${wind ? `🌬 ${rangeText(wind)} m/s` : ""}${gust ? ` · raf. ${rangeText(gust)}` : ""}</div>
-      <div class="hour__row">${cloud ? `☁️ ${rangeText(cloud, 0)}%` : ""}${humid ? ` · 💧 ${round(humid.value, 0)}%` : ""}</div>
+      <div class="hour__row">${wind ? `🌬 ${round(wind.value)}${gust ? ` · raf. ${round(gust.value)}` : ""} m/s` : ""}</div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
@@ -502,19 +514,28 @@ function renderConfidence(fc) {
 function renderTable(times, byTime) {
   const tb = el("table-body");
   tb.innerHTML = "";
+  // Point values in cells; the honest range moves to a hover tooltip so the
+  // table stays scannable. The date appears on the first row of each day.
+  const tip = (it, d = 1) =>
+    it && it.low !== it.high ? ` title="fourchette ${round(it.low, d)}–${round(it.high, d)}"` : "";
+  const val = (it, d = 1, suf = "") => (it ? `${round(it.value, d)}${suf}` : "—");
+  let lastDay = null;
   for (const t of times) {
     const row = byTime[t] || {};
+    const day = fmtDay(t);
+    const showDay = day !== lastDay;
+    lastDay = day;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${fmtTime(t)}</td>
-      <td>${row.temperature_2m ? rangeText(row.temperature_2m) + "°" : "—"}</td>
-      <td>${row.dew_point_2m ? round(row.dew_point_2m.value) + "°" : "—"}</td>
-      <td>${row.precipitation_probability ? round(row.precipitation_probability.value, 0) + "%" : "—"}</td>
-      <td>${row.wind_speed_10m ? rangeText(row.wind_speed_10m) + " m/s" : "—"}</td>
-      <td>${row.wind_gusts_10m ? rangeText(row.wind_gusts_10m) + " m/s" : "—"}</td>
-      <td>${row.relative_humidity_2m ? round(row.relative_humidity_2m.value, 0) + "%" : "—"}</td>
-      <td>${row.cloud_cover ? rangeText(row.cloud_cover, 0) + "%" : "—"}</td>
-      <td>${row.pressure_msl ? round(row.pressure_msl.value, 0) + " hPa" : "—"}</td>
+      <td>${fmtTime(t)}${showDay ? `<div class="tr__day">${day}</div>` : ""}</td>
+      <td${tip(row.temperature_2m)}>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
+      <td${tip(row.dew_point_2m)}>${val(row.dew_point_2m)}°</td>
+      <td${tip(row.precipitation_probability, 0)}>${val(row.precipitation_probability, 0, "%")}</td>
+      <td${tip(row.wind_speed_10m)}>${val(row.wind_speed_10m)} m/s</td>
+      <td${tip(row.wind_gusts_10m)}>${val(row.wind_gusts_10m)} m/s</td>
+      <td${tip(row.relative_humidity_2m, 0)}>${val(row.relative_humidity_2m, 0, "%")}</td>
+      <td${tip(row.cloud_cover, 0)}>${val(row.cloud_cover, 0, "%")}</td>
+      <td${tip(row.pressure_msl, 0)}>${val(row.pressure_msl, 0, " hPa")}</td>
       <td>${row.visibility ? (row.visibility.value >= 10000 ? "≥10 km" : round(row.visibility.value / 1000, 1) + " km") : "—"}</td>`;
     tb.appendChild(tr);
   }

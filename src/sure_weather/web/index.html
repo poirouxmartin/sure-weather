@@ -54,7 +54,7 @@
       <!-- Location -->
       <section class="hero">
         <div class="hero__sky" id="sky-icon" aria-hidden="true">☀️</div>
-        <div>
+        <div class="hero__main">
           <h1 class="hero__name">
             <span id="loc-name">—</span>
             <button class="fav__toggle" id="fav-btn" type="button" title="Ajouter aux favoris">☆</button>
@@ -64,11 +64,14 @@
         </div>
         <div class="hero__now">
           <div class="hero__temp" id="now-temp">—°</div>
+          <div class="hero__range" id="now-range"></div>
           <div class="hero__feels" id="now-feels"></div>
           <div class="hero__details" id="now-details"></div>
         </div>
-        <div class="hero__sure" id="sure-badge" hidden></div>
-        <div class="hero__stations" id="station-badge" hidden></div>
+        <div class="hero__badges">
+          <div class="hero__sure" id="sure-badge" hidden></div>
+          <div class="hero__stations" id="station-badge" hidden></div>
+        </div>
       </section>
 
       <!-- Range selector -->
