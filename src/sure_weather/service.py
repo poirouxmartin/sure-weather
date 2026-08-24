@@ -15,6 +15,7 @@ from .collectors import (
 from .config import Config
 from .fusion import (
     ProviderStat,
+    _VARIABLE_BOUNDS,
     _VARIABLE_TOLERANCE,
     fuse,
     horizon_bucket,
@@ -28,7 +29,7 @@ from .models import (
     ForecastSample,
     Provider,
 )
-from .storage import Storage
+from .storage import Storage, _parse_dt
 
 
 # Key variables users care about for a "sure" promise; precipitation is shown
@@ -89,6 +90,7 @@ class WeatherService:
         self._stats_fingerprint: tuple[str, int] | None = None
         self._fc_cache: dict[tuple[float, float, int], tuple[float, dict]] = {}
         self._fc_lock = threading.Lock()
+        self._refreshed_at: dict[str, float] = {}
 
     # ---- forecast response cache ----
 
@@ -182,8 +184,6 @@ class WeatherService:
             if not (fresh and fresh[0]):
                 self._ingest_nearby_stations(lat, lon)
             else:
-                from .storage import _parse_dt
-
                 if (datetime.now(timezone.utc) - _parse_dt(fresh[0])) >= timedelta(
                     hours=1
                 ):
@@ -242,22 +242,38 @@ class WeatherService:
     def _refresh_model_run_if_stale(self, center: Cell) -> None:
         """Re-collect a fast 7-day forecast when the stored run is stale.
 
-        A cell whose newest run no longer covers the future (old backfill with
-        forecast_days=1, or a run that aged out) must be refreshed on demand,
-        otherwise the window filter leaves the zone with no data. Fetching a
-        fresh forecast_days=7 run is a single fast network round-trip per cell.
+        Two staleness modes must trigger a refresh:
+        - the run no longer reaches into the future (old backfill with
+          forecast_days=1): the window filter leaves the zone with no data;
+        - the run itself aged: NWP models issue every ~6h, and a multi-day-old
+          run pushes every near-hour forecast into the 120h horizon bucket,
+          where no calibration applies (confidence collapses, everything reads
+          "non cal."). Fresh runs keep near hours in the calibrated 3h/12h
+          buckets.
+        A cell is refreshed at most once per hour to spare the upstream API.
         """
         now = datetime.now(timezone.utc)
         future = self.storage._conn.execute(
             "SELECT COUNT(*) FROM forecasts WHERE cell_key=? AND valid_at > ?",
             (center.key, (now + timedelta(hours=3)).isoformat()),
         ).fetchone()
-        if future and future[0] > 0:
+        has_future = bool(future and future[0] > 0)
+        row = self.storage._conn.execute(
+            "SELECT MAX(issued_at) FROM forecasts WHERE cell_key=?",
+            (center.key,),
+        ).fetchone()
+        issued = _parse_dt(row[0]) if row and row[0] else None
+        run_fresh = issued is not None and (now - issued) <= timedelta(hours=12)
+        if has_future and run_fresh:
+            return
+        last = self._refreshed_at.get(center.key)
+        if last is not None and (time.time() - last) < 3600:
             return
         try:
             collector = OpenMeteoCollector(self.config)
             samples = collector.fetch_forecast(center, forecast_days=7)
             self.storage.insert_forecasts(samples)
+            self._refreshed_at[center.key] = time.time()
             self._forecast_invalidate()
         except Exception:
             # Best-effort: a stale run is better than an empty forecast only
@@ -384,6 +400,15 @@ class WeatherService:
             if r.valid_at < now or r.valid_at > until:
                 continue
             tol = _VARIABLE_TOLERANCE.get(r.variable, 1.5)
+            # Honest range: value +/- tolerance at the stated confidence,
+            # clamped to the variable's physical bounds (a humidity of
+            # "73-113%" or a wind of "-0.5-3.5 m/s" reads as a bug).
+            lo_b, hi_b = _VARIABLE_BOUNDS.get(r.variable, (None, None))
+            low, high = r.consensus - tol, r.consensus + tol
+            if lo_b is not None:
+                low = max(low, lo_b)
+            if hi_b is not None:
+                high = min(high, hi_b)
             out.append(
                 {
                     "variable": r.variable,
@@ -394,9 +419,8 @@ class WeatherService:
                     "dispersion": round(r.dispersion, 3),
                     "bias_corrected": r.bias_corrected,
                     "tolerance": tol,
-                    # Honest range: value +/- tolerance at the stated confidence.
-                    "low": round(r.consensus - tol, 2),
-                    "high": round(r.consensus + tol, 2),
+                    "low": round(low, 2),
+                    "high": round(high, 2),
                     # "Sure" only when calibration is active AND confidence is high.
                     "sure": r.calibrated and r.confidence >= 0.98,
                     "horizon_h": round(
