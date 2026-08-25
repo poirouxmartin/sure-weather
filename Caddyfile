@@ -1,0 +1,23 @@
+# Sure Weather — accès HTTPS depuis le réseau local (téléphone/tablette).
+#
+# Le service worker et l'installation PWA exigent un contexte sécurisé :
+# en HTTP, seul http://localhost fonctionne. Ce reverse proxy expose
+# l'API uvicorn en HTTPS avec un certificat local émis par Caddy.
+#
+# Usage :
+#   1. installer Caddy (https://caddyserver.com) — un binaire unique
+#   2. lancer l'API :  python -m uvicorn sure_weather.api:app --port 8000
+#   3. lancer le proxy : caddy run --config Caddyfile
+#   4. sur le téléphone : https://<IP-DU-PC>:8443
+#      (accepter le certificat local de Caddy une fois)
+#      -> Chrome Android : "Installer l'application" / iOS Safari :
+#         Partager -> "Sur l'écran d'accueil"
+#
+# Remplacer :8443 par :443 si le port est libre. `tls internal` demande
+# la confiance pour le certificat racine de Caddy au premier lancement.
+
+:8443 {
+	tls internal
+	encode gzip
+	reverse_proxy 127.0.0.1:8000
+}

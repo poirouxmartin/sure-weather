@@ -1,17 +1,28 @@
 {
+  "id": "/?source=pwa",
   "name": "Sure Weather",
   "short_name": "SureWeather",
   "description": "Prévisions météo multi-sources avec confiance calibrée par variable.",
-  "start_url": "/",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "/?source=pwa",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#eef2f7",
   "theme_color": "#1b2a4a",
+  "categories": ["weather", "utilities"],
   "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
     {
-      "src": "/static/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
+      "name": "Ma position",
+      "short_name": "Position",
+      "url": "/?geo=1&source=pwa"
     }
   ]
 }

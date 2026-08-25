@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -148,6 +149,133 @@ app.mount("/static", StaticFiles(directory=_web_dir), name="static")
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(_web_dir / "index.html")
+
+
+@app.get("/mini", include_in_schema=False)
+def mini() -> FileResponse:
+    """Ultra-light widget-style page: one card, no map, 10-min auto refresh.
+
+    Designed to be pinned to a phone home screen (per-place shortcut with
+    ?lat=&lon=&name=) where native widgets are unavailable to PWAs.
+    """
+    return FileResponse(_web_dir / "mini.html")
+
+
+# ---- Widget feed (home-screen widgets via Shortcuts iOS / KWGT Android) ----
+
+def _sky_key(row: dict, hour: int) -> str:
+    rain = row.get("precipitation", {}).get("value", 0) or 0
+    prob = row.get("precipitation_probability", {}).get("value", 0) or 0
+    cloud = row.get("cloud_cover", {}).get("value", 0) or 0
+    if rain > 5:
+        return "storm"
+    if prob >= 70 or rain > 0.3:
+        return "rain"
+    if cloud >= 30:
+        return "partly"
+    return "night" if (hour < 6 or hour >= 21) else "day"
+
+
+def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
+    """Compact now+day summary for widgets, built on the cached forecast."""
+    data = _service.forecast(lat, lon, hours=hours)
+    by_time: dict[str, dict] = {}
+    for item in data["forecast"]:
+        by_time.setdefault(item["valid_at"], {})[item["variable"]] = item
+    times = sorted(by_time)
+    if not times:
+        raise HTTPException(status_code=404, detail="no forecast data")
+    cur = by_time[times[0]]
+    temp = cur.get("temperature_2m", {})
+    wind = cur.get("wind_speed_10m", {})
+    gust = cur.get("wind_gusts_10m", {})
+    temps = [i["value"] for i in data["forecast"] if i["variable"] == "temperature_2m"]
+    rain_mm = sum(
+        (i["value"] or 0)
+        for i in data["forecast"]
+        if i["variable"] == "precipitation"
+    )
+    contributors = {p for i in data["forecast"] for p in i.get("contributors", [])}
+    stations = {p for p in contributors if p.startswith("metar_")}
+    hour = datetime.now(timezone.utc).hour
+    summary = {
+        "location": {"lat": lat, "lon": lon},
+        "cell": data["cell"],
+        "updated_at": data["generated_at"],
+        "temp": temp.get("value"),
+        "low": temp.get("low"),
+        "high": temp.get("high"),
+        "confidence": temp.get("confidence"),
+        "sure": temp.get("sure", False),
+        "rain_probability": (cur.get("precipitation_probability") or {}).get("value"),
+        "rain_24h_mm": round(rain_mm, 1),
+        "wind_kmh": round(wind["value"] * 3.6) if wind else None,
+        "gust_kmh": round(gust["value"] * 3.6) if gust else None,
+        "tmax": round(max(temps), 1) if temps else None,
+        "tmin": round(min(temps), 1) if temps else None,
+        "sky": _sky_key(cur, hour),
+        "stations": len(stations),
+        "models": len(contributors) - len(stations),
+    }
+    return summary
+
+
+@app.get("/now")
+def now_endpoint(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+) -> dict:
+    """Compact current-weather JSON for smartphone widgets.
+
+    Consumed by iOS Shortcuts and Android KWGT/Tasker (PWAs cannot ship
+    native home-screen widgets). Reuses the forecast TTL cache, so polling
+    every few minutes costs nothing.
+    """
+    return _now_summary(lat, lon)
+
+
+_SKY_COLORS = {
+    "day": ("#7cc3f5", "#b8ddf7"),
+    "night": ("#0f1b3a", "#3a4a74"),
+    "rain": ("#4b6275", "#7a8fa3"),
+    "storm": ("#2b3647", "#4d5c72"),
+    "partly": ("#6fb2e8", "#a8d3f3"),
+}
+_SKY_ICONS = {"day": "☀️", "night": "🌙", "rain": "🌧", "storm": "⛈", "partly": "⛅"}
+
+
+@app.get("/widget.svg")
+def widget_svg(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    name: str = Query(""),
+) -> Response:
+    """Rendered SVG weather card for widget tools that accept images."""
+    s = _now_summary(lat, lon)
+    top, bottom = _SKY_COLORS.get(s["sky"], _SKY_COLORS["day"])
+    icon = _SKY_ICONS.get(s["sky"], "☀️")
+    label = name or f"{lat:.4f}, {lon:.4f}"
+    conf = round((s["confidence"] or 0) * 100)
+    sure_txt = "sûr" if s["sure"] else f"conf. {conf}%"
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="400" height="220" viewBox="0 0 400 220">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="{top}"/>
+      <stop offset="1" stop-color="{bottom}"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="220" rx="24" fill="url(#bg)"/>
+  <text x="24" y="40" font-family="system-ui,sans-serif" font-size="17" font-weight="700" fill="#ffffff" opacity=".92">{label[:34]}</text>
+  <text x="24" y="150" font-family="system-ui,sans-serif" font-size="64" font-weight="800" fill="#ffffff">{s["temp"] is not None and f'{s["temp"]:.0f}°' or '—'}</text>
+  <text x="250" y="86" font-family="system-ui,sans-serif" font-size="44">{icon}</text>
+  <text x="24" y="182" font-family="system-ui,sans-serif" font-size="15" fill="#ffffff" opacity=".9">↑{s["tmax"]}° ↓{s["tmin"]}° · ☔ {s["rain_probability"] is not None and f'{s["rain_probability"]:.0f}%' or '—'}</text>
+  <text x="24" y="204" font-family="system-ui,sans-serif" font-size="12" fill="#ffffff" opacity=".75">{s["wind_kmh"] or '—'} km/h · {sure_txt} · {s["stations"]} station{s["stations"] > 1 and 's' or ''}</text>
+</svg>"""
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)

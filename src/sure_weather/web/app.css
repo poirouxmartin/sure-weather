@@ -40,7 +40,10 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#6fb2e8 0%,#a8d3f2 
 .app {
   max-width: 1060px;
   margin: 0 auto;
-  padding: 20px 20px 40px;
+  /* Safe-area aware: standalone iOS/Android push content into notches and
+     home-indicator zones unless padded. */
+  padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+           calc(40px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
 }
 
 /* ---- Top bar ---- */

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1b2a4a" />
+  <title>Sure Weather — widget</title>
+  <style>
+    :root { --ink:#fff; --soft:rgba(255,255,255,.8); }
+    * { box-sizing:border-box; margin:0; }
+    html,body { height:100%; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      color: var(--ink);
+      display:flex; align-items:center; justify-content:center;
+      background: linear-gradient(180deg,#7cc3f5,#3a4a74);
+      transition: background 1s;
+    }
+    body[data-sky="night"] { background: linear-gradient(180deg,#0f1b3a,#3a4a74); }
+    body[data-sky="rain"] { background: linear-gradient(180deg,#4b6275,#7a8fa3); }
+    body[data-sky="storm"] { background: linear-gradient(180deg,#2b3647,#4d5c72); }
+    body[data-sky="partly"] { background: linear-gradient(180deg,#6fb2e8,#a8d3f3); }
+    body[data-sky="day"] { background: linear-gradient(180deg,#7cc3f5,#b8ddf7); color:#14213d; --soft:rgba(20,33,61,.7); }
+    .card { text-align:center; padding:24px 34px; }
+    .name { font-size:14px; font-weight:600; opacity:.85; }
+    .temp { font-size:84px; font-weight:800; letter-spacing:-3px; line-height:1; margin:6px 0; }
+    .ic { font-size:44px; vertical-align:super; margin-left:8px; }
+    .row { font-size:14px; opacity:.9; margin-top:4px; }
+    .badge { display:inline-block; margin-top:14px; font-size:12px; font-weight:700;
+      background:rgba(255,255,255,.22); border-radius:999px; padding:5px 12px; }
+    .upd { margin-top:12px; font-size:11px; opacity:.6; }
+  </style>
+</head>
+<body data-sky="day">
+  <div class="card">
+    <div class="name" id="name">—</div>
+    <div><span class="temp" id="temp">—°</span><span class="ic" id="ic">☀️</span></div>
+    <div class="row" id="range"></div>
+    <div class="row" id="detail"></div>
+    <div class="row" id="day"></div>
+    <div class="badge" id="conf"></div>
+    <div class="upd" id="upd"></div>
+  </div>
+  <script>
+    "use strict";
+    const p = new URLSearchParams(location.search);
+    const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon"));
+    const ICONS = { day: "☀️", night: "🌙", rain: "🌧", storm: "⛈", partly: "⛅" };
+    async function load() {
+      try {
+        const r = await fetch(`/now?lat=${lat}&lon=${lon}`);
+        if (!r.ok) throw 0;
+        const s = await r.json();
+        document.title = (p.get("name") || "Sure Weather") + " — widget";
+        document.getElementById("name").textContent = p.get("name") || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        document.getElementById("temp").textContent = s.temp !== null ? Math.round(s.temp) + "°" : "—";
+        document.getElementById("ic").textContent = ICONS[s.sky] || "☀️";
+        document.body.dataset.sky = s.sky;
+        document.getElementById("range").textContent = `↑${s.tmax}° ↓${s.tmin}°`;
+        document.getElementById("detail").textContent =
+          `☔ ${s.rain_probability !== null ? Math.round(s.rain_probability) + "%" : "—"} · 💨 ${s.wind_kmh ?? "—"} km/h · 💧 ${s.rain_24h_mm} mm`;
+        document.getElementById("day").textContent = `min ${s.tmin}° / max ${s.tmax}° sur 24 h`;
+        const conf = Math.round((s.confidence || 0) * 100);
+        document.getElementById("conf").textContent = s.sure ? "✓ sûr à 98 %+" : `fiable à ${conf} %`;
+        document.getElementById("upd").textContent =
+          `${s.stations} station(s) · maj ${new Date(s.updated_at).toLocaleTimeString("fr-FR")}`;
+      } catch { /* keep last values */ }
+    }
+    load();
+    setInterval(load, 10 * 60 * 1000);
+  </script>
+</body>
+</html>
