@@ -68,6 +68,43 @@ def _clamped_range(variable: str, consensus: float, tol: float) -> tuple[float, 
     return low, high
 
 
+# Horizon prior extrapolation: the archive that grounds long-horizon
+# residuals lags ~5 days, so 12h/48h/120h buckets fill over days. Until a
+# bucket has real residuals, extrapolate the nearest learned bucket with a
+# documented error-growth factor — conservative by construction (rmse grows,
+# sample weight shrinks), it yields cautious calibrated confidence instead
+# of an uncalibrated guess for the first days of a cell's life.
+_HORIZON_INFLATION = {3.0: 1.0, 12.0: 1.35, 48.0: 1.8, 120.0: 2.3}
+
+
+def _extrapolate_horizon_priors(
+    stats: dict[tuple[str, str, str, float], ProviderStat],
+) -> dict[tuple[str, str, str, float], ProviderStat]:
+    by_series: dict[tuple[str, str, str], list[ProviderStat]] = {}
+    for key, s in stats.items():
+        if s.samples >= 3:
+            by_series.setdefault((key[0], key[1], key[2]), []).append(s)
+    out = dict(stats)
+    for (provider, cell_key, variable), learned in by_series.items():
+        learned.sort(key=lambda s: s.horizon_h)
+        base = learned[0]
+        for bucket, factor in _HORIZON_INFLATION.items():
+            key = (provider, cell_key, variable, bucket)
+            if key in out:
+                continue
+            out[key] = ProviderStat(
+                provider=provider,
+                cell_key=cell_key,
+                variable=variable,
+                horizon_h=bucket,
+                samples=max(3, base.samples // 4),
+                bias=base.bias,
+                rmse=base.rmse * factor,
+                updated_at=base.updated_at,
+            )
+    return out
+
+
 def _summarize(forecast: list[dict], hours: int) -> dict:
     """Per-horizon summary of how much of the forecast is genuinely 'sure'."""
     bands = [(0, 6, "3h"), (6, 24, "12h"), (24, 72, "48h"), (72, hours, "J+")]
@@ -176,6 +213,7 @@ class WeatherService:
         cells = self.storage.get_cells()
         if cells:
             stats = spatial_stats(stats, cells)
+        stats = _extrapolate_horizon_priors(stats)
         self._stats = stats
         self._stats_fingerprint = fp
         return stats
@@ -276,18 +314,28 @@ class WeatherService:
         A cell is refreshed at most once per hour to spare the upstream API.
         """
         now = datetime.now(timezone.utc)
+        # A healthy 7-day run reaches ~5+ days ahead; anything shorter (an
+        # old backfill, a truncated run) must be refreshed even though it
+        # still technically covers the next few hours.
         future = self.storage._conn.execute(
             "SELECT COUNT(*) FROM forecasts WHERE cell_key=? AND valid_at > ?",
             (center.key, (now + timedelta(hours=3)).isoformat()),
         ).fetchone()
         has_future = bool(future and future[0] > 0)
+        reach = self.storage._conn.execute(
+            "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=?",
+            (center.key,),
+        ).fetchone()
+        reach_ok = bool(reach and reach[0]) and _parse_dt(reach[0]) >= now + timedelta(
+            hours=120
+        )
         row = self.storage._conn.execute(
             "SELECT MAX(issued_at) FROM forecasts WHERE cell_key=?",
             (center.key,),
         ).fetchone()
         issued = _parse_dt(row[0]) if row and row[0] else None
         run_fresh = issued is not None and (now - issued) <= timedelta(hours=12)
-        if has_future and run_fresh:
+        if has_future and reach_ok and run_fresh:
             return
         last = self._refreshed_at.get(center.key)
         if last is not None and (time.time() - last) < 3600:
@@ -334,11 +382,16 @@ class WeatherService:
             collector = OpenMeteoCollector(self.config)
             end = datetime.now(timezone.utc)
 
-            # Loop 1 — recent analysis (cheap single request).
+            # Loop 1 — recent analysis (cheap single request). Only past
+            # hours are stored: this fetch must never become the latest
+            # issued run, otherwise its 1-day coverage would shadow the
+            # 7-day run in latest_forecasts and truncate every forecast.
             analysis = collector.fetch_forecast(
                 center, forecast_days=1, past_days=2, include_high_res=False
             )
-            self.storage.insert_forecasts(analysis)
+            self.storage.insert_forecasts(
+                [s for s in analysis if s.valid_at <= end]
+            )
 
             # Loop 2 — archive catch-up, only when yesterday is missing.
             yesterday = (end - timedelta(days=1)).date().isoformat()

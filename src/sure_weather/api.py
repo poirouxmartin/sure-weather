@@ -143,7 +143,24 @@ def tile(layer: str, z: int, x: int, y: int) -> Response:
 
 
 _web_dir = Path(__file__).parent / "web"
-app.mount("/static", StaticFiles(directory=_web_dir), name="static")
+
+
+class _NoCacheStatic(StaticFiles):
+    """Static assets must always revalidate.
+
+    Without Cache-Control, browsers apply heuristic freshness and can pin a
+    stale app.css/app.js for the rest of the day (the service worker's
+    network-first fetch inherits that HTTP cache). `no-cache` keeps etag
+    304s while guaranteeing freshness after every deploy.
+    """
+
+    def file_response(self, *args, **kwargs):  # noqa: D102
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _NoCacheStatic(directory=_web_dir), name="static")
 
 
 @app.get("/", include_in_schema=False)

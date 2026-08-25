@@ -1,4 +1,4 @@
-const CACHE = "sure-weather-v5";
+const CACHE = "sure-weather-v6";
 const APP_SHELL = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg"];
 
 self.addEventListener("install", (e) => {

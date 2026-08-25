@@ -55,11 +55,45 @@ CREATE TABLE IF NOT EXISTS residuals (
     horizon_h  REAL NOT NULL,
     predicted  REAL NOT NULL,
     observed   REAL NOT NULL,
-    PRIMARY KEY (provider, cell_key, variable, valid_at)
+    PRIMARY KEY (provider, cell_key, variable, valid_at, horizon_h)
 );
 CREATE INDEX IF NOT EXISTS idx_res_provider ON residuals(provider, cell_key, variable, valid_at);
 CREATE INDEX IF NOT EXISTS idx_res_valid ON residuals(valid_at);
 """
+
+# Pre-horizon-PK schema stored the same rows keyed without horizon_h: every
+# later analysis (3h bucket) overwrote the longer-horizon residual recorded
+# for the same valid time, freezing all learned stats to the 3h bucket.
+_OLD_PK = "PRIMARY KEY (provider, cell_key, variable, valid_at)"
+
+
+def _migrate_residuals_horizon_pk(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='residuals'"
+    ).fetchone()
+    if row is None or _OLD_PK not in row[0]:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE residuals_migrated (
+            provider   TEXT NOT NULL,
+            cell_key   TEXT NOT NULL,
+            variable   TEXT NOT NULL,
+            valid_at   TEXT NOT NULL,
+            horizon_h  REAL NOT NULL,
+            predicted  REAL NOT NULL,
+            observed   REAL NOT NULL,
+            PRIMARY KEY (provider, cell_key, variable, valid_at, horizon_h)
+        );
+        INSERT OR REPLACE INTO residuals_migrated
+            SELECT provider, cell_key, variable, valid_at, horizon_h, predicted, observed
+            FROM residuals;
+        DROP TABLE residuals;
+        ALTER TABLE residuals_migrated RENAME TO residuals;
+        CREATE INDEX IF NOT EXISTS idx_res_provider ON residuals(provider, cell_key, variable, valid_at);
+        CREATE INDEX IF NOT EXISTS idx_res_valid ON residuals(valid_at);
+        """
+    )
 
 
 def _parse_dt(text: str) -> datetime:
@@ -88,6 +122,7 @@ class Storage:
         self._conn.execute("PRAGMA cache_size=-16000;")  # ~16 MB
         self._conn.execute("PRAGMA mmap_size=268435456;")  # 256 MB
         self._conn.execute("PRAGMA temp_store=MEMORY;")
+        _migrate_residuals_horizon_pk(self._conn)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -250,7 +285,14 @@ class Storage:
         variables: Iterable[str],
         providers: Iterable[str] | None = None,
     ) -> list[ForecastSample]:
-        """Most recent issue for each (provider, cell, variable), all valid times."""
+        """All valid times of the best run for each (provider, cell, variable).
+
+        "Best" means the issue with the longest forward coverage (ties broken
+        by the most recent issue) — NOT simply the latest issue. Hourly
+        calibration inserts single-hour analysis rows (issued == valid) that
+        would otherwise constantly shadow the 7-day forecast run and truncate
+        the whole forecast to one data point.
+        """
         cell_list = list(cells)
         var_list = list(variables)
         if not cell_list or not var_list:
@@ -265,13 +307,21 @@ class Storage:
             provider_clause = f"AND provider IN ({pplaceholders})"
             params += provider_list
         sql = (
-            "SELECT provider, cell_key, variable, issued_at, valid_at, value "
+            "WITH reach AS ("
+            "  SELECT provider, cell_key, variable, issued_at, MAX(valid_at) AS mv"
+            f"  FROM forecasts WHERE cell_key IN ({placeholders}) AND variable IN ({vplaceholders})"
+            f"  {provider_clause}"
+            "  GROUP BY provider, cell_key, variable, issued_at"
+            "), best AS ("
+            "  SELECT provider, cell_key, variable, issued_at,"
+            "         ROW_NUMBER() OVER (PARTITION BY provider, cell_key, variable"
+            "                            ORDER BY mv DESC, issued_at DESC) AS rn"
+            "  FROM reach"
+            ") "
+            "SELECT f.provider, f.cell_key, f.variable, f.issued_at, f.valid_at, f.value "
             "FROM forecasts f "
-            f"WHERE cell_key IN ({placeholders}) AND variable IN ({vplaceholders}) "
-            f"{provider_clause} "
-            "AND issued_at = (SELECT MAX(issued_at) FROM forecasts f2 "
-            "  WHERE f2.provider = f.provider AND f2.cell_key = f.cell_key "
-            "  AND f2.variable = f.variable)"
+            "JOIN best b ON b.provider = f.provider AND b.cell_key = f.cell_key "
+            "  AND b.variable = f.variable AND b.issued_at = f.issued_at AND b.rn = 1"
         )
         rows = self._conn.execute(sql, params).fetchall()
         return [

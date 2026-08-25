@@ -65,13 +65,13 @@ def test_refresh_triggers_on_aged_run(tmp_path, monkeypatch):
 
 
 def test_refresh_skips_fresh_run(tmp_path, monkeypatch):
-    """A recent run with future coverage must not be re-fetched."""
+    """A recent 7-day run must not be re-fetched."""
     svc = _fresh_service(tmp_path)
     now = datetime.now(timezone.utc)
     cell = Cell(key="48.9000,2.4000", lat=48.9, lon=2.4)
     svc.storage.upsert_cells([(cell.key, cell.lat, cell.lon)])
     svc.storage.insert_forecasts(
-        [_sample(cell.key, now - timedelta(hours=1), now + timedelta(hours=h)) for h in range(1, 30)]
+        [_sample(cell.key, now - timedelta(hours=1), now + timedelta(hours=h)) for h in range(1, 200)]
     )
     called = {"n": 0}
 

@@ -469,22 +469,29 @@ function renderTimeline(times, byTime) {
   let avgConf = null;
   const confs = times.map((t) => byTime[t].temperature_2m?.confidence).filter((c) => c !== null);
   if (confs.length) avgConf = confs.reduce((a, b) => a + b, 0) / confs.length;
+  // Labels overlap once columns get narrower than the text: thin them out
+  // according to the real pixel width per column (mobile has ~15px columns
+  // where even 24 labels collide).
+  const width = chart.clientWidth || 600;
+  const pxPerCol = width / Math.max(times.length, 1);
+  const step = Math.max(1, Math.ceil(36 / Math.max(pxPerCol, 1)));
 
-  for (const t of times) {
+  times.forEach((t, idx) => {
     const row = byTime[t];
     const v = row.temperature_2m?.value;
-    if (v === null || v === undefined) continue;
+    if (v === null || v === undefined) return;
     const pct = ((v - min) / span) * 100;
     const cls = v < 10 ? "tl-bar--cold" : v < 25 ? "tl-bar--mild" : "tl-bar--hot";
+    const showLabel = idx % step === 0;
     const col = document.createElement("div");
     col.className = "tl-col";
     col.innerHTML = `
       <div class="tl-bar ${cls}" style="height:${Math.max(pct, 3)}%">
-        <span class="tl-bar__temp">${round(v)}°</span>
+        ${showLabel ? `<span class="tl-bar__temp">${round(v)}°</span>` : ""}
       </div>
-      <span class="tl-time">${fmtTime(t)}</span>`;
+      ${showLabel ? `<span class="tl-time">${fmtTime(t)}</span>` : ""}`;
     chart.appendChild(col);
-  }
+  });
   if (avgConf !== null) {
     el("timeline-badge").textContent = `confiance moyenne ${Math.round(avgConf * 100)}%`;
     el("timeline-badge").style.background = `rgba(15,157,88,.12)`;
@@ -525,8 +532,8 @@ function renderHours(times, byTime) {
         ${showDay ? `<span class="hour__day">${day}</span>` : ""}
       </div>
       <div class="hour__main">
-        <span class="hour__ic">${wk.icon}</span>
         <span class="hour__temp">${temp ? round(temp.value) + "°" : "—"}</span>
+        <span class="hour__ic">${wk.icon}</span>
       </div>
       <div class="hour__range">${rng}</div>
       <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
