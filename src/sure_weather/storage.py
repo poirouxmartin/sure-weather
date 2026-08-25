@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,11 @@ class Storage:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # One shared connection serves the FastAPI threadpool and the boot
+        # warm-up thread. SQLite's C layer is serialized, but transactions
+        # are logical: without this lock a commit/rollback from one thread
+        # can validate or discard another thread's open transaction.
+        self._tx_lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
         # Read-path tuning: a bigger page cache and memory-mapped I/O keep
@@ -87,12 +93,13 @@ class Storage:
 
     @contextmanager
     def tx(self):
-        try:
-            yield self._conn
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        with self._tx_lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     # ---- providers ----
 

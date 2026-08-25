@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -31,6 +32,8 @@ from .models import (
 )
 from .storage import Storage, _parse_dt
 
+logger = logging.getLogger(__name__)
+
 
 # Key variables users care about for a "sure" promise; precipitation is shown
 # as calibrated probability instead of a point estimate.
@@ -48,6 +51,21 @@ _SURE_VARIABLES = (
 # clicks nearby) must feel instant instead of re-running the fusion.
 _FC_TTL_S = 300.0
 _FC_CACHE_MAX = 64
+
+
+def _clamped_range(variable: str, consensus: float, tol: float) -> tuple[float, float]:
+    """Honest range (consensus +/- tolerance) clipped to physical bounds.
+
+    A humidity of "73-113%" or a wind of "-0.5-3.5 m/s" would read as a bug;
+    the tolerance interval is clipped to the variable's valid domain.
+    """
+    lo_b, hi_b = _VARIABLE_BOUNDS.get(variable, (None, None))
+    low, high = consensus - tol, consensus + tol
+    if lo_b is not None:
+        low = max(low, lo_b)
+    if hi_b is not None:
+        high = min(high, hi_b)
+    return low, high
 
 
 def _summarize(forecast: list[dict], hours: int) -> dict:
@@ -91,6 +109,7 @@ class WeatherService:
         self._fc_cache: dict[tuple[float, float, int], tuple[float, dict]] = {}
         self._fc_lock = threading.Lock()
         self._refreshed_at: dict[str, float] = {}
+        self._calibrated_at: dict[str, float] = {}
 
     # ---- forecast response cache ----
 
@@ -193,6 +212,10 @@ class WeatherService:
             # a run that simply aged out). Otherwise the window filter in
             # forecast() drops every result and the zone shows "no data".
             self._refresh_model_run_if_stale(center)
+            # Keep calibration alive in the background: the first cycle for a
+            # cell is heavy (archive fetch + residual matching over days), it
+            # must never sit inside the user's request.
+            self._schedule_calibration(center)
             return
         for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
             self.storage.upsert_provider(Provider(name=m, kind="model"))
@@ -275,10 +298,86 @@ class WeatherService:
             self.storage.insert_forecasts(samples)
             self._refreshed_at[center.key] = time.time()
             self._forecast_invalidate()
-        except Exception:
+        except Exception as exc:
             # Best-effort: a stale run is better than an empty forecast only
             # marginally; never break the request over a refresh failure.
+            logger.warning("run refresh failed for %s: %s", center.key, exc)
             return
+
+    def _schedule_calibration(self, center: Cell) -> None:
+        """Spawn the hourly calibration cycle in a daemon thread.
+
+        The timestamp is claimed before spawning so concurrent requests for
+        the same zone start at most one cycle per hour.
+        """
+        now = time.time()
+        last = self._calibrated_at.get(center.key)
+        if last is not None and (now - last) < 3600:
+            return
+        self._calibrated_at[center.key] = now
+        threading.Thread(target=self._calibrate_cell, args=(center,), daemon=True).start()
+
+    def _calibrate_cell(self, center: Cell) -> None:
+        """Refresh residuals for a cell so its calibration stays live.
+
+        The backfill computes residuals once; without this loop the learned
+        bias/rmse would freeze forever and horizons beyond the analysis bucket
+        would never gain stats. Two catch-up loops per cell, at most hourly:
+        - recent model analysis (past 2 days) lands in the forecasts table and
+          is matched against stored observations (stations + reanalysis),
+        - the archive (D-6..D-1, ~5-day publication latency) is fetched when
+          missing; matching it against the stored 7-day runs is what turns
+          past 12h/48h/120h forecasts into residuals, i.e. what calibrates
+          the longer horizons over time.
+        """
+        try:
+            collector = OpenMeteoCollector(self.config)
+            end = datetime.now(timezone.utc)
+
+            # Loop 1 — recent analysis (cheap single request).
+            analysis = collector.fetch_forecast(
+                center, forecast_days=1, past_days=2, include_high_res=False
+            )
+            self.storage.insert_forecasts(analysis)
+
+            # Loop 2 — archive catch-up, only when yesterday is missing.
+            yesterday = (end - timedelta(days=1)).date().isoformat()
+            have = self.storage._conn.execute(
+                "SELECT MAX(time) FROM observations WHERE cell_key=? "
+                "AND provider IN ('era5_seamless','era5_land','cerra')",
+                (center.key,),
+            ).fetchone()
+            latest_obs = _parse_dt(have[0]).date().isoformat() if have and have[0] else ""
+            if latest_obs < yesterday:
+                obs = collector.fetch_historical(
+                    center, end - timedelta(days=8), end - timedelta(days=1)
+                )
+                self.storage.insert_observations(obs)
+
+            # Match everything stored in the window against the observations.
+            kinds = {p.name: p.kind for p in self.storage.get_providers()}
+            start = end - timedelta(days=9)
+            forecasts = self.storage.forecasts_in_window(
+                [center.key], list(ALL_VARIABLES), start, end
+            )
+            observations = self.storage.observations_in_window(
+                [center.key], list(OBSERVABLE_VARIABLES), start, end
+            )
+            residuals = compute_residuals(forecasts, observations, kinds)
+            self.storage.insert_residuals(residuals)
+            # New residuals shift the fingerprint: drop cached responses so
+            # the next request fuses with fresh calibration.
+            self._forecast_invalidate()
+            logger.info(
+                "calibration %s: +%d residuals", center.key, len(residuals)
+            )
+        except Exception as exc:
+            # Calibration is a background concern: a failed cycle must never
+            # break the forecast request; retry in ~10 minutes.
+            self._calibrated_at[center.key] = time.time() - 3000
+            logger.warning(
+                "calibration failed for %s: %s", center.key, exc
+            )
 
     def _ingest_nearby_stations(self, lat: float, lon: float) -> None:
         """Fetch recent METAR reports near (lat, lon) and store observations."""
@@ -299,9 +398,10 @@ class WeatherService:
                     collector.to_observations(r, self.config.cell_resolution)
                 )
             self.storage.insert_observations(observations)
-        except Exception:
+        except Exception as exc:
             # Station discovery is best-effort: a network hiccup or an empty
             # area must never break a forecast request.
+            logger.warning("station ingest failed near %s,%s: %s", lat, lon, exc)
             return
 
     def _nearby_station_samples(
@@ -400,15 +500,7 @@ class WeatherService:
             if r.valid_at < now or r.valid_at > until:
                 continue
             tol = _VARIABLE_TOLERANCE.get(r.variable, 1.5)
-            # Honest range: value +/- tolerance at the stated confidence,
-            # clamped to the variable's physical bounds (a humidity of
-            # "73-113%" or a wind of "-0.5-3.5 m/s" reads as a bug).
-            lo_b, hi_b = _VARIABLE_BOUNDS.get(r.variable, (None, None))
-            low, high = r.consensus - tol, r.consensus + tol
-            if lo_b is not None:
-                low = max(low, lo_b)
-            if hi_b is not None:
-                high = min(high, hi_b)
+            low, high = _clamped_range(r.variable, r.consensus, tol)
             out.append(
                 {
                     "variable": r.variable,
