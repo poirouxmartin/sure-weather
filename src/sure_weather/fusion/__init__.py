@@ -100,61 +100,80 @@ def spatial_stats(
     `sigma_km` range). A cell with few samples blends its own stats with the
     spatial prior so early predictions are not overfit to a handful of hours.
     Returns a new dict; cells with no neighbors keep their entries as-is.
+
+    Vectorized: the pairwise weight matrix depends only on cell positions, so
+    it is computed once and reused for every (provider, variable, horizon)
+    group instead of re-running millions of Python haversine calls.
     """
+    keys = [c.key for c in cells]
+    index = {k: i for i, k in enumerate(keys)}
+    n = len(cells)
+    lats = np.array([c.lat for c in cells])
+    lons = np.array([c.lon for c in cells])
+
+    # Pairwise great-circle distances (n x n), then Gaussian weights.
+    p1 = np.radians(lats)[:, None]
+    p2 = np.radians(lats)[None, :]
+    dphi = np.radians(lats)[None, :] - np.radians(lats)[:, None]
+    dlmb = np.radians(lons)[None, :] - np.radians(lons)[:, None]
+    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2) ** 2
+    dist_km = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+    W = np.exp(-(dist_km**2) / (2.0 * sigma_km * sigma_km))
+    np.fill_diagonal(W, 0.0)  # a cell never borrows from itself here
+    W[W < 1e-3] = 0.0
+
     # Group stats by (provider, variable, horizon) across cells.
     keys_by_group: dict[tuple[str, str, float], list[tuple[str, ProviderStat]]] = {}
     for key, s in stats.items():
         group = (key[0], key[2], key[3])
         keys_by_group.setdefault(group, []).append((key[1], s))
 
-    positions = {c.key: (c.lat, c.lon) for c in cells}
     out = dict(stats)
-
+    now = None
     for group, entries in keys_by_group.items():
         provider, variable, horizon = group
-        # Cells with solid learned stats for this group.
-        solid = {cell_key for cell_key, s in entries if s.samples >= 3}
-        for cell in cells:
-            own = next((s for ck, s in entries if ck == cell.key), None)
-            if own is not None and own.samples >= 3:
+        b = np.full(n, np.nan)
+        r = np.full(n, np.nan)
+        s = np.full(n, 0.0)
+        has = np.zeros(n, dtype=bool)
+        updated = {}
+        for cell_key, st in entries:
+            i = index.get(cell_key)
+            if i is None:
                 continue
-            # Inverse-distance Gaussian weights over neighbor cells.
-            lat, lon = cell.lat, cell.lon
-            weights: list[tuple[float, ProviderStat]] = []
-            for cell_key, s in entries:
-                if cell_key == cell.key or cell_key not in positions:
-                    continue
-                plat, plon = positions[cell_key]
-                d = _haversine_km(lat, lon, plat, plon)
-                w = math.exp(-(d * d) / (2.0 * sigma_km * sigma_km))
-                if w > 1e-3:
-                    weights.append((w, s))
-            if not weights:
+            b[i], r[i], s[i], has[i] = st.bias, st.rmse, float(st.samples), True
+            updated[i] = st.updated_at
+        if not has.any():
+            continue
+        solid = has & (s >= 3)
+
+        # Cells that need a spatial prior: no own stat, or too few samples.
+        targets = np.where(~solid)[0]
+        for t in targets:
+            w = W[t] * has  # only cells that have a stat contribute
+            total = w.sum()
+            if total <= 0:
                 continue
-            total = sum(w for w, _s in weights)
-            bias = sum(w * s.bias for w, s in weights) / total
-            # Blend rmse via squared weights to keep spread meaningful.
-            rmse = math.sqrt(
-                sum(w * s.rmse * s.rmse for w, s in weights) / total
-            )
-            samples = int(round(sum(w * s.samples for w, s in weights) / total))
-            # Blend the cell's own few-sample stat with the spatial prior.
-            if own is not None and own.samples > 0:
-                own_w = own.samples / (own.samples + total)
-                bias = own_w * own.bias + (1 - own_w) * bias
-                rmse = math.sqrt(
-                    own_w * own.rmse**2 + (1 - own_w) * rmse**2
-                )
-                samples = own.samples + samples
-            out[(provider, cell.key, variable, horizon)] = ProviderStat(
+            bias = float((w * np.nan_to_num(b)).sum() / total)
+            rmse = math.sqrt(float((w * np.nan_to_num(r) ** 2).sum() / total))
+            samples = int(round(float((w * s).sum() / total)))
+            own_w = 0.0
+            if has[t] and s[t] > 0:
+                own_w = s[t] / (s[t] + total)
+            if own_w > 0:
+                bias = own_w * b[t] + (1 - own_w) * bias
+                rmse = math.sqrt(own_w * r[t] ** 2 + (1 - own_w) * rmse**2)
+                samples = int(s[t] + samples)
+            src = [i for i in range(n) if has[i]]
+            out[(provider, keys[t], variable, horizon)] = ProviderStat(
                 provider=provider,
-                cell_key=cell.key,
+                cell_key=keys[t],
                 variable=variable,
                 horizon_h=horizon,
                 samples=max(samples, 1),
                 bias=bias,
                 rmse=rmse,
-                updated_at=max((s.updated_at for _w, s in weights)),
+                updated_at=max(updated[i] for i in src),
             )
     return out
 

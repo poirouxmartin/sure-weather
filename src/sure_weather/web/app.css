@@ -97,7 +97,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   font-size: 17px; box-shadow: 0 2px 8px rgba(14,143,163,.35);
 }
 .topbar__name { font-weight: 700; font-size: 16.5px; letter-spacing: -.3px; }
-.topbar__actions { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 260px; justify-content: flex-end; }
+.topbar__actions { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; justify-content: flex-end; flex-wrap: wrap; }
 
 /* ---- Buttons ---- */
 .btn {
@@ -121,7 +121,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .btn--ghost { background: rgba(255,255,255,.6); color: var(--ink); border-color: var(--line-strong); }
 .btn--ghost:hover { background: #fff; border-color: var(--ink-faint); }
 
-.search { display: flex; gap: 8px; flex: 1; max-width: 440px; min-width: 0; }
+.search { display: flex; gap: 8px; flex: 1 1 200px; max-width: 440px; min-width: 140px; }
 .search__input {
   flex: 1;
   min-width: 0;

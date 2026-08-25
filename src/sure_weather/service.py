@@ -147,6 +147,10 @@ class WeatherService:
         self._fc_lock = threading.Lock()
         self._refreshed_at: dict[str, float] = {}
         self._calibrated_at: dict[str, float] = {}
+        # Serializes stats computation: the boot warm-up and a concurrent
+        # request must never aggregate the residual window twice (the first
+        # request would otherwise wait for BOTH computations).
+        self._stats_lock = threading.Lock()
 
     # ---- forecast response cache ----
 
@@ -195,28 +199,33 @@ class WeatherService:
         fp = self._residuals_fingerprint(since)
         if self._stats is not None and fp == self._stats_fingerprint:
             return self._stats
-        stats: dict[tuple[str, str, str, float], ProviderStat] = {}
-        now = datetime.now(timezone.utc)
-        for provider, cell_key, variable, horizon_h, samples, bias, mse in (
-            self.storage.residual_bias_stats(since)
-        ):
-            stats[(provider, cell_key, variable, horizon_h)] = ProviderStat(
-                provider=provider,
-                cell_key=cell_key,
-                variable=variable,
-                horizon_h=horizon_h,
-                samples=samples,
-                bias=float(bias),
-                rmse=math.sqrt(mse) if mse is not None else 0.0,
-                updated_at=now,
-            )
-        cells = self.storage.get_cells()
-        if cells:
-            stats = spatial_stats(stats, cells)
-        stats = _extrapolate_horizon_priors(stats)
-        self._stats = stats
-        self._stats_fingerprint = fp
-        return stats
+        with self._stats_lock:
+            # Double-check: the boot warm-up may have finished while this
+            # request waited on the lock.
+            if self._stats is not None and fp == self._stats_fingerprint:
+                return self._stats
+            stats: dict[tuple[str, str, str, float], ProviderStat] = {}
+            now = datetime.now(timezone.utc)
+            for provider, cell_key, variable, horizon_h, samples, bias, mse in (
+                self.storage.residual_bias_stats(since)
+            ):
+                stats[(provider, cell_key, variable, horizon_h)] = ProviderStat(
+                    provider=provider,
+                    cell_key=cell_key,
+                    variable=variable,
+                    horizon_h=horizon_h,
+                    samples=samples,
+                    bias=float(bias),
+                    rmse=math.sqrt(mse) if mse is not None else 0.0,
+                    updated_at=now,
+                )
+            cells = self.storage.get_cells()
+            if cells:
+                stats = spatial_stats(stats, cells)
+            stats = _extrapolate_horizon_priors(stats)
+            self._stats = stats
+            self._stats_fingerprint = fp
+            return stats
 
     def _ensure_cell_data(self, center: Cell, lat: float, lon: float) -> None:
         """Fetch model forecast + reanalysis for a cell on first demand.

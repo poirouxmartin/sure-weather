@@ -609,6 +609,11 @@ $("#search-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = $("#search-input").value.trim();
   if (!q) return;
+  // Feedback BEFORE the weather request: geocoding (especially the
+  // Nominatim address fallback) can take several silent seconds.
+  show(el("loading"));
+  const status = document.querySelector("#load-status");
+  if (status) status.textContent = "recherche du lieu…";
   try {
     const loc = await geocode(q);
     state.lat = loc.lat;
