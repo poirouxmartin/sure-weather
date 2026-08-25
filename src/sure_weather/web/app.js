@@ -47,6 +47,26 @@ const VAR_ORDER = [
 let state = { lat: 48.8566, lon: 2.3522, hours: 24, name: "Paris" };
 let reqToken = 0;
 
+/* ---- Deep links ----
+   ?lat=&lon=&name= pre-selects a place (shared links, home-screen
+   shortcuts, widgets); ?geo=1 asks for geolocation on boot. The URL is
+   kept in sync so "copy link" always reproduces the current view. */
+(function initStateFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const la = parseFloat(p.get("lat"));
+  const lo = parseFloat(p.get("lon"));
+  if (Number.isFinite(la) && Number.isFinite(lo)) {
+    state.lat = la;
+    state.lon = lo;
+    state.name = p.get("name") || `${la.toFixed(4)}, ${lo.toFixed(4)}`;
+  }
+})();
+
+function syncUrl() {
+  const q = `?lat=${state.lat}&lon=${state.lon}&name=${encodeURIComponent(state.name)}`;
+  history.replaceState(null, "", q);
+}
+
 /* ---- Favorites (localStorage) ---- */
 const FAV_KEY = "sure-weather-favorites";
 
@@ -145,6 +165,15 @@ function round(v, d = 1) {
 function isNight(iso) {
   const h = new Date(iso).getHours();
   return h < 6 || h >= 21;
+}
+
+/* Wind is stored in m/s (model unit) but shown in km/h for a FR audience. */
+function kmh(item, d = 0) {
+  if (!item) return "—";
+  const lo = item.low !== undefined ? Math.round(item.low * 3.6) : null;
+  const hi = item.high !== undefined ? Math.round(item.high * 3.6) : null;
+  if (lo !== null && hi !== null && lo !== hi) return `${lo}–${hi} km/h`;
+  return `${Math.round(item.value * 3.6)} km/h`;
 }
 
 /* Rough weather icon + sky key from available variables. */
@@ -254,8 +283,14 @@ async function loadForecast() {
   const tick = setInterval(() => {
     if (status && i < progress.length) status.textContent = progress[i++];
   }, 6000);
+  // A stalled connection must never spin forever: hard timeout, and the
+  // error card offers a retry.
+  const ctrl = new AbortController();
+  const abortTimer = setTimeout(() => ctrl.abort(), 45000);
   try {
-    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`);
+    syncUrl();
+    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`, { signal: ctrl.signal });
+    clearTimeout(abortTimer);
     if (!r.ok) throw new Error(`API ${r.status}`);
     const data = await r.json();
     clearInterval(tick);
@@ -268,13 +303,31 @@ async function loadForecast() {
     }
     render(data);
   } catch (e) {
+    clearTimeout(abortTimer);
     clearInterval(tick);
     if (token !== reqToken) return;
     hide(el("loading"));
     hide(el("content"));
-    show(el("error"));
-    el("error").textContent = e.message;
+    const msg = e.name === "AbortError"
+      ? "Le calcul prend trop longtemps (source météo lente ou injoignable)."
+      : e.message;
+    showError(msg);
   }
+}
+
+function showError(message) {
+  const box = el("error");
+  box.innerHTML = "";
+  const span = document.createElement("span");
+  span.textContent = message + " ";
+  const btn = document.createElement("button");
+  btn.className = "btn btn--ghost error__retry";
+  btn.type = "button";
+  btn.textContent = "Réessayer";
+  btn.addEventListener("click", loadForecast);
+  box.appendChild(span);
+  box.appendChild(btn);
+  show(box);
 }
 
 /* ---- Render ---- */
@@ -300,9 +353,11 @@ function render(data) {
 
   el("loc-name").textContent = state.name;
   el("loc-meta").textContent = `cellule ${data.cell} · mis à jour à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
-  const contributors = new Set((data.forecast[0]?.contributors ?? []));
+  // Union of contributors across the whole window: the first item alone can
+  // undercount (its group may lack station reports).
+  const contributors = new Set(fc.flatMap((i) => i.contributors ?? []));
   const stationCount = [...contributors].filter((c) => c.startsWith("metar_")).length;
-  const modelCount = contributors.size - stationCount;
+  const modelCount = [...contributors].filter((c) => !c.startsWith("metar_")).length;
   el("footer-note").textContent =
     `Fusion de ${modelCount} modèles` +
     (stationCount ? ` + ${stationCount} stations locales` : "") +
@@ -321,7 +376,7 @@ function render(data) {
     t && t.calibrated && t.confidence < 0.98 ? `fourchette ${round(t.low)}–${round(t.high)}°` : "";
   el("now-feels").textContent = t ? `Ressenti ${rangeText(t)}°` : "";
   const det = [];
-  if (nowRow.wind_speed_10m) det.push(`💨 ${rangeText(nowRow.wind_speed_10m)} m/s`);
+  if (nowRow.wind_speed_10m) det.push(`💨 ${kmh(nowRow.wind_speed_10m)}`);
   if (nowRow.relative_humidity_2m) det.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
   if (nowRow.pressure_msl) det.push(`${rangeText(nowRow.pressure_msl, 0)} hPa`);
   if (nowRow.precipitation_probability) det.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
@@ -475,7 +530,7 @@ function renderHours(times, byTime) {
       </div>
       <div class="hour__range">${rng}</div>
       <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
-      <div class="hour__row">${wind ? `🌬 ${round(wind.value)}${gust ? ` · raf. ${round(gust.value)}` : ""} m/s` : ""}</div>
+      <div class="hour__row">${wind ? `🌬 ${kmh(wind)}${gust ? ` · raf. ${Math.round(gust.value * 3.6)}` : ""}` : ""}</div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
@@ -531,8 +586,8 @@ function renderTable(times, byTime) {
       <td${tip(row.temperature_2m)}>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
       <td${tip(row.dew_point_2m)}>${val(row.dew_point_2m)}°</td>
       <td${tip(row.precipitation_probability, 0)}>${val(row.precipitation_probability, 0, "%")}</td>
-      <td${tip(row.wind_speed_10m)}>${val(row.wind_speed_10m)} m/s</td>
-      <td${tip(row.wind_gusts_10m)}>${val(row.wind_gusts_10m)} m/s</td>
+      <td${tip(row.wind_speed_10m, 0)}>${row.wind_speed_10m ? Math.round(row.wind_speed_10m.value * 3.6) + " km/h" : "—"}</td>
+      <td${tip(row.wind_gusts_10m, 0)}>${row.wind_gusts_10m ? Math.round(row.wind_gusts_10m.value * 3.6) + " km/h" : "—"}</td>
       <td${tip(row.relative_humidity_2m, 0)}>${val(row.relative_humidity_2m, 0, "%")}</td>
       <td${tip(row.cloud_cover, 0)}>${val(row.cloud_cover, 0, "%")}</td>
       <td${tip(row.pressure_msl, 0)}>${val(row.pressure_msl, 0, " hPa")}</td>
@@ -554,8 +609,8 @@ $("#search-form").addEventListener("submit", async (e) => {
     state.name = loc.name;
     await loadForecast();
   } catch (err) {
-    show(el("error"));
-    el("error").textContent = err.message;
+    hide(el("loading"));
+    showError(err.message);
   }
 });
 
@@ -567,8 +622,8 @@ $("#locate-btn").addEventListener("click", async () => {
     state.name = loc.name;
     await loadForecast();
   } catch (err) {
-    show(el("error"));
-    el("error").textContent = err.message;
+    hide(el("loading"));
+    showError(err.message);
   }
 });
 
@@ -791,3 +846,14 @@ loadForecast();
 renderFavorites();
 // The map and radar initialize inside render(), once `#content` is visible:
 // Leaflet needs a non-zero container to fetch tiles (no gray map).
+// Home-screen shortcut "?geo=1": ask for geolocation once on boot.
+if (new URLSearchParams(location.search).get("geo") === "1") {
+  locateMe()
+    .then((loc) => {
+      state.lat = loc.lat;
+      state.lon = loc.lon;
+      state.name = loc.name;
+      loadForecast();
+    })
+    .catch(() => {});
+}
