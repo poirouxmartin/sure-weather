@@ -15,8 +15,16 @@
 #
 # Remplacer :8443 par :443 si le port est libre. `tls internal` demande
 # la confiance pour le certificat racine de Caddy au premier lancement.
+# `http_port` : le port 80 est souvent réservé par Windows sans droits
+# admin, la redirection HTTP->HTTPS écoute sur 8080 à la place.
 
-:8443 {
+{
+	http_port 8080
+}
+
+# Certificats internes émis explicitement pour localhost et l'IP LAN
+# (mettre à jour l'IP si le DHCP du réseau la change).
+https://127.0.0.1:8443 https://192.168.0.219:8443 {
 	tls internal
 	encode gzip
 	reverse_proxy 127.0.0.1:8000
