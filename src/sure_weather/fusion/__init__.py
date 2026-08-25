@@ -31,6 +31,8 @@ _VARIABLE_TOLERANCE = {
     "cloud_cover": 20.0,
     "wind_speed_10m": 2.0,
     "wind_gusts_10m": 3.0,
+    # Direction is an angle: "within +/- 30 degrees of the true flow".
+    "wind_direction_10m": 30.0,
     "pressure_msl": 2.0,
     "visibility": 5000.0,
 }
@@ -45,6 +47,7 @@ _VARIABLE_BOUNDS = {
     "cloud_cover": (0.0, 100.0),
     "wind_speed_10m": (0.0, None),
     "wind_gusts_10m": (0.0, None),
+    "wind_direction_10m": (0.0, 360.0),
     "pressure_msl": (None, None),
     "visibility": (0.0, None),
 }
@@ -229,6 +232,18 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return float(v[np.searchsorted(cumsum, half)])
 
 
+def _circular_mean(angles_deg: np.ndarray, weights: np.ndarray) -> float:
+    """Weighted mean of compass angles (degrees, 0 = north, clockwise)."""
+    rad = np.radians(angles_deg)
+    x = float((weights * np.cos(rad)).sum())
+    y = float((weights * np.sin(rad)).sum())
+    mean = math.degrees(math.atan2(y, x))
+    mean %= 360.0
+    if mean >= 360.0 - 1e-9:  # -1e-16 wraps to 359.99…: snap to true north
+        mean = 0.0
+    return mean
+
+
 def _fuse_one(
     samples: list[ForecastSample],
     stats: dict[tuple[str, str, str, float], ProviderStat],
@@ -259,44 +274,63 @@ def _fuse_one(
 
     raw = np.array([p[1] for p in pairs], dtype=float)
     weights = np.array([p[2] for p in pairs], dtype=float)
+    is_direction = variable == "wind_direction_10m"
 
     # Robustness pass 1: reject gross outliers relative to weighted median.
-    med = _weighted_median(raw, weights) if weights.sum() > 0 else float(np.median(raw))
-    spread = _mad(raw) or float(np.std(raw)) or 1.0
-    dev = np.abs(raw - med)
-    keep = dev <= 3.0 * spread  # robust outlier gate: 3*MAD keeps honest spread
-    if 2 <= keep.sum() < len(raw):
-        raw = raw[keep]
-        weights = weights[keep]
-        pairs = [p for p, k in zip(pairs, keep) if k]
+    # Angles wrap around, so the linear MAD gate would wrongly reject north
+    # readings near 350/10 degrees — directions skip this pass.
+    if not is_direction:
+        med = _weighted_median(raw, weights) if weights.sum() > 0 else float(np.median(raw))
+        spread = _mad(raw) or float(np.std(raw)) or 1.0
+        dev = np.abs(raw - med)
+        keep = dev <= 3.0 * spread  # robust outlier gate: 3*MAD keeps honest spread
+        if 2 <= keep.sum() < len(raw):
+            raw = raw[keep]
+            weights = weights[keep]
+            pairs = [p for p, k in zip(pairs, keep) if k]
 
-    # Bias correction per provider from learned stats.
-    corrected: list[float] = []
-    any_corrected = False
-    for provider, value, w in pairs:
-        bucket = horizon_bucket(valid_at, samples[0].issued_at)
-        stat = stats.get((provider, cell_key, variable, bucket))
-        if stat and stat.samples >= 3:
-            corrected.append(value - stat.bias)
-            any_corrected = True
-        else:
-            corrected.append(value)
-    corrected_arr = np.array(corrected, dtype=float) if corrected else raw
+    # Bias correction per provider from learned stats. Angular biases are not
+    # linear (a +10° correction near north wraps wrongly), so directions are
+    # never bias-corrected — their rmse already carries the error.
+    if is_direction:
+        corrected_arr = raw
+        any_corrected = False
+    else:
+        corrected: list[float] = []
+        any_corrected = False
+        for provider, value, w in pairs:
+            bucket = horizon_bucket(valid_at, samples[0].issued_at)
+            stat = stats.get((provider, cell_key, variable, bucket))
+            if stat and stat.samples >= 3:
+                corrected.append(value - stat.bias)
+                any_corrected = True
+            else:
+                corrected.append(value)
+        corrected_arr = np.array(corrected, dtype=float) if corrected else raw
 
-    # Robustness pass 2: bias-corrected weighted consensus.
-    consensus = (
-        float(np.average(corrected_arr, weights=weights))
-        if weights.sum() > 0
-        else float(np.median(corrected_arr))
-    )
+    # Robustness pass 2: bias-corrected weighted consensus. Directions use a
+    # weighted circular mean (350° and 10° average to 0°, not 180°).
+    if is_direction:
+        consensus = _circular_mean(corrected_arr, weights)
+    else:
+        consensus = (
+            float(np.average(corrected_arr, weights=weights))
+            if weights.sum() > 0
+            else float(np.median(corrected_arr))
+        )
     lo, hi = _VARIABLE_BOUNDS.get(variable, (None, None))
     if lo is not None:
         consensus = max(consensus, lo)
     if hi is not None:
         consensus = min(consensus, hi)
-    residual_spread = float(
-        np.average(np.abs(corrected_arr - consensus), weights=weights)
-    )
+    if is_direction:
+        # Angular spread: shortest distance on the circle, not linear |Δ|.
+        diff = np.abs((corrected_arr - consensus + 180.0) % 360.0 - 180.0)
+        residual_spread = float(np.average(diff, weights=weights))
+    else:
+        residual_spread = float(
+            np.average(np.abs(corrected_arr - consensus), weights=weights)
+        )
     residual_spread = residual_spread or float(np.std(corrected_arr)) or 0.0
 
     # Calibrated confidence: probability that the fused value is within

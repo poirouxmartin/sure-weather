@@ -586,3 +586,27 @@ html[data-theme="dark"] .vpill--rain { background: rgba(91,140,255,.18); }
 html[data-theme="dark"] .vpill--warn { background: rgba(217,119,6,.2); }
 html[data-theme="dark"] .hour, html[data-theme="dark"] .card { background: var(--card); }
 html[data-theme="dark"] .loading { background: rgba(0,0,0,.75); }
+/* ---- Map wind arrows ---- */
+.map__wind {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; cursor: pointer;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  color: var(--ink);
+}
+.map__wind input { accent-color: var(--accent); }
+.windarrow {
+  font-size: 15px;
+  text-shadow: 0 0 3px rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.9);
+  line-height: 22px;
+  text-align: center;
+}
+html[data-theme="dark"] .windarrow { text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 3px rgba(0,0,0,.9); }
+.hour__windarrow { display: inline-block; font-size: 10px; color: var(--accent); }
+.hour__from { color: var(--ink-faint); font-weight: 600; }
+/* Model forecast radar frames: visually distinct from observed radar. */
+.radar-model {
+  filter: saturate(.7) brightness(1.1);
+}

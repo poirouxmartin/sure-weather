@@ -14,7 +14,7 @@ from .config import load_config
 from .net import get_client
 from .service import WeatherService
 from .storage import Storage
-from .tiles import render_tile
+from .tiles import render_tile, wind_grid as render_wind_grid
 
 app = FastAPI(title="Sure Weather", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -116,7 +116,13 @@ def radar() -> dict:
 
 
 @app.get("/tile/{layer}/{z}/{x}/{y}.png")
-def tile(layer: str, z: int, x: int, y: int) -> Response:
+def tile(
+    layer: str,
+    z: int,
+    x: int,
+    y: int,
+    h: int = Query(0, ge=0, le=23),
+) -> Response:
     """Raster overlay tile (temperature or precipitation) from the Open-Meteo model.
 
     Open-Meteo no longer serves plain XYZ weather tiles (its current format is
@@ -124,15 +130,20 @@ def tile(layer: str, z: int, x: int, y: int) -> Response:
     Instead the backend samples the multi-location forecast API on a grid over
     each tile, colorizes the result and returns a small PNG. Rendered tiles are
     cached in memory for a few minutes, so panning reuses the same requests.
+
+    `h` shifts the precipitation layer into the future (1..23 h from now):
+    the model-side "forecast frames" that extend the observed radar timeline.
     """
     if layer not in ("temp", "precip"):
         raise HTTPException(status_code=404, detail=f"unknown layer {layer!r}")
+    if layer == "temp" and h:
+        raise HTTPException(status_code=422, detail="h applies to precip only")
     if not (3 <= z <= 12):
         raise HTTPException(status_code=404, detail="zoom out of range")
     n = 1 << z
     if not (0 <= x < n and 0 <= y < n):
         raise HTTPException(status_code=404, detail="tile out of range")
-    data = render_tile(layer, z, x, y)
+    data = render_tile(layer, z, x, y, hour_offset=h)
     if data is None:
         raise HTTPException(status_code=502, detail="tile upstream unavailable")
     return Response(
@@ -235,6 +246,27 @@ def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
         "models": len(contributors) - len(stations),
     }
     return summary
+
+
+@app.get("/wind-grid")
+def wind_grid_endpoint(
+    lat_n: float = Query(..., ge=-90, le=90),
+    lon_w: float = Query(..., ge=-180, le=180),
+    lat_s: float = Query(..., ge=-90, le=90),
+    lon_e: float = Query(..., ge=-180, le=180),
+    n: int = Query(6, ge=2, le=10),
+) -> dict:
+    """Wind arrows for the map overlay: a small grid of speed + direction.
+
+    The client renders rotating arrows colored by speed on top of the radar.
+    Cached like tiles, so map panning reuses the same upstream request.
+    """
+    if lat_s >= lat_n or lon_e <= lon_w:
+        raise HTTPException(status_code=422, detail="invalid bounds")
+    points = render_wind_grid(lat_n, lon_w, lat_s, lon_e, n)
+    if points is None:
+        raise HTTPException(status_code=502, detail="wind upstream unavailable")
+    return {"points": points}
 
 
 @app.get("/now")

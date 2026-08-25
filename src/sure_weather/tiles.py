@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import struct
@@ -8,6 +8,7 @@ import zlib
 from typing import Callable
 
 import httpx
+import json
 import numpy as np
 
 
@@ -142,8 +143,69 @@ def _cache_put(key: tuple[str, int, int, int], data: bytes) -> None:
 _CURRENT_VARS = "temperature_2m,precipitation"
 
 
-def _build_request_params(z: int, x: int, y: int) -> list[tuple[str, str]]:
-    """Lat/lon grid sampling the tile, north→south rows, west→east columns."""
+def wind_grid(
+    lat_n: float,
+    lon_w: float,
+    lat_s: float,
+    lon_e: float,
+    n: int = 6,
+    *,
+    base_url: str = "https://api.open-meteo.com/v1",
+) -> list[dict] | None:
+    """Sample wind speed + direction on a grid over the given bounds.
+
+    Powers the map's wind-arrow overlay: one multi-location request for the
+    whole viewport, cached briefly so panning doesn't hammer the API.
+    """
+    key = ("windgrid", round(lat_n, 2), round(lon_w, 2), round(lat_s, 2), round(lon_e, 2), n)
+    cached = _cache_get(key)
+    if cached is not None:
+        return json.loads(cached)
+    params: list[tuple[str, str]] = []
+    lats = np.linspace(lat_n, lat_s, n)
+    lons = np.linspace(lon_w, lon_e, n)
+    for la in lats:
+        for lo in lons:
+            params.append(("latitude", f"{la:.4f}"))
+            params.append(("longitude", f"{lo:.4f}"))
+    params.append(("current", "wind_speed_10m,wind_direction_10m"))
+    try:
+        from .net import get_client
+
+        r = get_client().get(f"{base_url}/forecast", params=params, timeout=30)
+        r.raise_for_status()
+        samples = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not isinstance(samples, list):
+        return None
+    points = []
+    for i, s in enumerate(samples):
+        cur = s.get("current") or {}
+        speed = cur.get("wind_speed_10m")
+        deg = cur.get("wind_direction_10m")
+        if speed is None or deg is None:
+            continue
+        points.append({
+            "lat": round(float(lats[i // n]), 4),
+            "lon": round(float(lons[i % n]), 4),
+            "kmh": round(speed * 3.6),
+            "deg": round(float(deg)),
+        })
+    data = json.dumps(points)
+    _cache_put(key, data)
+    return points
+
+
+def _build_request_params(
+    z: int, x: int, y: int, *, hour_offset: int = 0
+) -> tuple[list[tuple[str, str]], str]:
+    """Lat/lon grid sampling the tile, north→south rows, west→east columns.
+
+    hour_offset=0 uses the live `current` block; offsets 1..23 request the
+    hourly precipitation array instead — that is how the map shows where the
+    model moves the rain AFTER the radar's last observed frame.
+    """
     lon_w, lat_s, lon_e, lat_n = tile_bounds(z, x, y)
     lats = np.linspace(lat_n, lat_s, _SAMPLES)
     lons = np.linspace(lon_w, lon_e, _SAMPLES)
@@ -152,12 +214,33 @@ def _build_request_params(z: int, x: int, y: int) -> list[tuple[str, str]]:
         for lo in lons:
             params.append(("latitude", f"{la:.4f}"))
             params.append(("longitude", f"{lo:.4f}"))
+    if hour_offset:
+        params.append(("hourly", "precipitation"))
+        params.append(("forecast_days", "2"))
+        params.append(("timeformat", "unixtime"))
+        return params, "h"
     params.append(("current", _CURRENT_VARS))
-    return params
+    return params, "now"
 
 
-def _sample_to_grid(layer: str, samples: list[dict]) -> np.ndarray:
-    """Map the flat list of per-location responses back to an (_SAMPLES, _SAMPLES) grid."""
+def _sample_to_grid(layer: str, samples: list[dict], hour_offset: int = 0) -> np.ndarray:
+    """Map the flat list of per-location responses back to a value grid."""
+    if hour_offset:
+        target = int(time.time()) // 3600 * 3600 + hour_offset * 3600
+        grid = np.full((_SAMPLES, _SAMPLES), np.nan)
+        for i, s in enumerate(samples):
+            times = (s.get("hourly") or {}).get("time") or []
+            vals = (s.get("hourly") or {}).get("precipitation") or []
+            best = None  # nearest forecast hour to the requested offset
+            for t, v in zip(times, vals):
+                if v is None:
+                    continue
+                d = abs(int(t) - target)
+                if best is None or d < best[0]:
+                    best = (d, v)
+            if best is not None:
+                grid[i // _SAMPLES, i % _SAMPLES] = float(best[1])
+        return grid
     key = "temperature_2m" if layer == "temp" else "precipitation"
     grid = np.full((_SAMPLES, _SAMPLES), np.nan, dtype=np.float64)
     for i, s in enumerate(samples):
@@ -174,22 +257,28 @@ def render_tile(
     x: int,
     y: int,
     *,
+    hour_offset: int = 0,
     base_url: str = "https://api.open-meteo.com/v1",
     user_agent: str = "sure-weather/0.1",
 ) -> bytes | None:
-    """Render a 256x256 PNG overlay tile for `layer` in ('temp', 'precip')."""
+    """Render a 256x256 PNG overlay tile for `layer` in ('temp', 'precip').
+
+    `hour_offset` > 0 renders the model's precipitation that many hours from
+    now: the "future frames" that extend the observed radar timeline.
+    """
     if layer not in ("temp", "precip"):
         return None
-    key = (layer, z, x, y)
+    key = (layer, z, x, y, hour_offset)
     cached = _cache_get(key)
     if cached is not None:
         return cached
     try:
         from .net import get_client
 
+        params, _ = _build_request_params(z, x, y, hour_offset=hour_offset)
         r = get_client().get(
             f"{base_url}/forecast",
-            params=_build_request_params(z, x, y),
+            params=params,
             timeout=30,
         )
         r.raise_for_status()
@@ -198,7 +287,7 @@ def render_tile(
     samples = r.json()
     if not isinstance(samples, list):
         return None
-    grid = _sample_to_grid(layer, samples)
+    grid = _sample_to_grid(layer, samples, hour_offset=hour_offset)
     overlay = (
         temperature_overlay(grid)
         if layer == "temp"

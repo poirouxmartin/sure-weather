@@ -5,18 +5,22 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js");
 }
 
-const VAR_LABELS = {
-  temperature_2m: "Température",
-  dew_point_2m: "Point de rosée",
-  relative_humidity_2m: "Humidité",
-  precipitation: "Pluie",
-  precipitation_probability: "Probabilité de pluie",
-  cloud_cover: "Nébulosité",
-  wind_speed_10m: "Vent",
-  wind_gusts_10m: "Rafales",
-  pressure_msl: "Pression",
-  visibility: "Visibilité",
+const VAR_LABELS_KEYS = {
+  temperature_2m: "var_temp",
+  dew_point_2m: "var_dew",
+  relative_humidity_2m: "var_hum",
+  precipitation: "var_rain",
+  precipitation_probability: "var_rainprob",
+  cloud_cover: "var_cloud",
+  wind_speed_10m: "var_wind",
+  wind_gusts_10m: "var_gust",
+  pressure_msl: "var_press",
+  visibility: "var_vis",
 };
+
+function varLabel(v) {
+  return tr(VAR_LABELS_KEYS[v] || v);
+}
 
 const VAR_UNITS = {
   temperature_2m: "°C",
@@ -152,7 +156,7 @@ const hide = (n) => (n.hidden = true);
 const show = (n) => (n.hidden = false);
 
 function fmtTime(iso) {
-  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
 function fmtDay(iso) {
   return new Date(iso).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
@@ -174,6 +178,22 @@ function kmh(item, d = 0) {
   const hi = item.high !== undefined ? Math.round(item.high * 3.6) : null;
   if (lo !== null && hi !== null && lo !== hi) return `${lo}–${hi} km/h`;
   return `${Math.round(item.value * 3.6)} km/h`;
+}
+
+/* Wind direction: meteorological convention — the sector the wind COMES
+   FROM. The arrow shows where it GOES (deg + 180). */
+const CARDINALS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSO", "SO", "OSO", "O", "ONO", "NO", "NNO"];
+const FLOW_ARROWS = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
+
+function windDir(row) {
+  const d = row.wind_direction_10m?.value;
+  if (d === null || d === undefined) return null;
+  const deg = ((d % 360) + 360) % 360;
+  return {
+    deg,
+    from: CARDINALS[Math.round(deg / 22.5) % 16],
+    arrow: FLOW_ARROWS[Math.round(((deg + 180) % 360) / 45) % 8],
+  };
 }
 
 /* Rough weather icon + sky key from available variables. */
@@ -242,19 +262,29 @@ async function geocode(query) {
   const g = await fetch(`/geocode?q=${encodeURIComponent(query)}&limit=1`);
   if (!g.ok) throw new Error(`adresse introuvable`);
   const gd = await g.json();
-  if (!gd.results || !gd.results.length) throw new Error("Lieu introuvable");
+  if (!gd.results || !gd.results.length) throw new Error(tr("err_notfound"));
   const hit = gd.results[0];
   return { lat: hit.lat, lon: hit.lon, name: hit.name };
 }
 
 function locateMe() {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error("Géolocalisation non supportée"));
+    if (!navigator.geolocation) return reject(new Error(tr("geoloc_err")));
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, name: "Ma position" }),
-      (err) => reject(new Error(`Géolocalisation refusée (${err.code})`)),
+      (err) => reject(new Error(tr("geoloc_err"))),
       { timeout: 10000 }
     );
+  });
+}
+
+/* ---- Language toggle ---- */
+const langBtn = document.getElementById("lang-btn");
+if (langBtn) {
+  langBtn.textContent = LANG.toUpperCase();
+  langBtn.addEventListener("click", () => {
+    setLang(LANG === "fr" ? "en" : "fr");
+    langBtn.textContent = LANG.toUpperCase();
   });
 }
 
@@ -286,11 +316,11 @@ async function loadForecast() {
   // visit (model analysis + reanalysis), which legitimately takes tens of
   // seconds. Tell the user it's working instead of leaving a silent spinner.
   const progress = [
-    "découverte des sources locales…",
-    "récupération de 3 mois d'archives (1ère visite)…",
-    "calibration de la confiance…",
-    "croisement des modèles et des stations…",
-    "encore un instant, la calibration est lourde…",
+    tr("loading_src"),
+    tr("loading_arch"),
+    tr("loading_calib"),
+    tr("loading_cross"),
+    tr("loading_wait"),
   ];
   let i = 0;
   const tick = setInterval(() => {
@@ -322,7 +352,7 @@ async function loadForecast() {
     hide(el("loading"));
     hide(el("content"));
     const msg = e.name === "AbortError"
-      ? "Le calcul prend trop longtemps (source météo lente ou injoignable)."
+      ? tr("err_slow")
       : e.message;
     showError(msg);
   }
@@ -336,7 +366,7 @@ function showError(message) {
   const btn = document.createElement("button");
   btn.className = "btn btn--ghost error__retry";
   btn.type = "button";
-  btn.textContent = "Réessayer";
+  btn.textContent = tr("retry");
   btn.addEventListener("click", loadForecast);
   box.appendChild(span);
   box.appendChild(btn);
@@ -370,13 +400,15 @@ function render(data) {
   const contributors = new Set(fc.flatMap((i) => i.contributors ?? []));
   const stationCount = [...contributors].filter((c) => c.startsWith("metar_")).length;
   const modelCount = [...contributors].filter((c) => !c.startsWith("metar_")).length;
-  el("footer-note").textContent =
-    `cellule ${data.cell} · maj ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}` +
-    ` · fusion de ${modelCount} modèles` +
-    (stationCount ? ` + ${stationCount} stations locales` : "") +
-    ` · correction de biais par cellule`;
+  el("footer-note").textContent = tr("footer", {
+    m: modelCount,
+    s: stationCount,
+    u: new Date(data.generated_at).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR"),
+  });
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
+  clearTimeout(windTimer);
+  windTimer = setTimeout(refreshWindArrows, 1200);
 
   /* Hero: current conditions — one glance, one line of small print */
   const nowRow = byTime[times[0]] || {};
@@ -386,7 +418,7 @@ function render(data) {
   const t = nowRow.temperature_2m;
   el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
   const sub = [];
-  if (t) sub.push(`Ressenti ${rangeText(t)}°`);
+  if (t) sub.push(`${tr("now_feels")} ${rangeText(t)}°`);
   if (nowRow.wind_speed_10m) sub.push(`💨 ${kmh(nowRow.wind_speed_10m)}`);
   if (nowRow.relative_humidity_2m) sub.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
   if (nowRow.precipitation_probability && nowRow.precipitation_probability.value > 0)
@@ -424,7 +456,7 @@ function renderStationBadge(fc) {
   badge.hidden = false;
   badge.className = "station-badge";
   badge.innerHTML = `📍 ${stations.size}`;
-  badge.title = `${stations.size} station${stations.size > 1 ? "s" : ""} météo locale${stations.size > 1 ? "s" : ""} en direct`;
+  badge.title = tr(stations.size > 1 ? "st_many" : "st_one", { n: stations.size });
 }
 
 /* Trust pill: a colored check + the number; details on hover. */
@@ -483,12 +515,12 @@ function renderVerdict(times, byTime) {
     (h) => (h.row.precipitation_probability?.value ?? 0) >= 50 || (h.row.precipitation?.value ?? 0) > 0.3
   );
   if (!rainHours.length) {
-    pills.push(`<span class="vpill vpill--ok"><span class="vpill__ic">☀️</span>Sec</span>`);
+    pills.push(`<span class="vpill vpill--ok"><span class="vpill__ic">☀️</span>${tr("v_dry")}</span>`);
   } else {
     const first = rainHours[0];
     const peak = Math.max(...rainHours.map((h) => h.row.precipitation_probability?.value ?? 0));
     pills.push(
-      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>Pluie dès ${fmtTime(first.t)}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
+      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>${tr("v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
     );
   }
   // Temperature: max & min with hour of max.
@@ -498,7 +530,7 @@ function renderVerdict(times, byTime) {
     const minT = Math.min(...temps);
     const at = rows.find((h) => h.row.temperature_2m?.value === maxT)?.t;
     pills.push(
-      `<span class="vpill"><span class="vpill__ic">🌡️</span><b style="color:${tempColor(maxT)}">${round(maxT)}°</b> / ${round(minT)}°${at ? ` <span class="vpill__sub">à ${fmtTime(at)}</span>` : ""}</span>`
+      `<span class="vpill"><span class="vpill__ic">🌡️</span><b style="color:${tempColor(maxT)}">${round(maxT)}°</b> / ${round(minT)}°${at ? ` <span class="vpill__sub">${tr("v_at", { h: fmtTime(at) })}</span>` : ""}</span>`
     );
   }
   // Wind alert when gusts become unpleasant.
@@ -506,14 +538,14 @@ function renderVerdict(times, byTime) {
   const maxGust = Math.max(...gusts, 0);
   if (maxGust >= 55) {
     const at = rows[gusts.indexOf(maxGust)]?.t;
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">💨</span>Rafales ${Math.round(maxGust)} km/h${at ? ` à ${fmtTime(at)}` : ""}</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">💨</span>${tr("v_gust", { v: Math.round(maxGust) })}${at ? ` ${tr("v_at", { h: fmtTime(at) })}` : ""}</span>`);
   }
   // Heat alert.
   if (temps.length && Math.max(...temps) >= 32) {
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">🥵</span>Forte chaleur</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">🥵</span>${tr("v_heat")}</span>`);
   }
   if (rows.length && rows.some((h) => h.row.temperature_2m?.value !== undefined && h.row.temperature_2m.value <= 0)) {
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">❄️</span>Gel</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">❄️</span>${tr("v_frost")}</span>`);
   }
   wrap.innerHTML = pills.join("");
 }
@@ -620,7 +652,7 @@ function renderTimeline(times, byTime) {
   // "Now" marker on the first column (label below the icon row).
   parts.push(
     `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
-    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 2}" class="mg-now">maintenant</text>`
+    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 2}" class="mg-now">${tr("now_label")}</text>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
@@ -662,6 +694,7 @@ function renderHours(times, byTime) {
         ? `${round(temp.low, 0)}–${round(temp.high, 0)}°`
         : "";
     const probVal = prob?.value ?? 0;
+    const wd = windDir(row);
     const card = document.createElement("div");
     card.className = "hour";
     if (temp) card.style.setProperty("--tint", tempColor(temp.value));
@@ -675,8 +708,8 @@ function renderHours(times, byTime) {
         <span class="hour__ic">${wk.icon}</span>
       </div>
       <div class="hour__range">${rng}</div>
-      <div class="hour__row">${probVal > 0 ? `💧 ${round(probVal, 0)}%` : '<span class="hour__dry">sec</span>'}</div>
-      <div class="hour__row">${wind ? `🌬 ${kmh(wind)}${gust ? ` · raf. ${Math.round(gust.value * 3.6)}` : ""}` : ""}</div>
+      <div class="hour__row">${probVal > 0 ? `💧 ${round(probVal, 0)}%` : '<span class="hour__dry">' + tr("dry") + '</span>'}</div>
+      <div class="hour__row">${wind ? `<span class="hour__windarrow" style="transform:rotate(${wd ? (wd.deg + 180) % 360 : 0}deg)">➤</span> ${kmh(wind)}${gust ? `${" · " + tr("raf") + " "}${Math.round(gust.value * 3.6)}` : ""}${wd ? ` <span class="hour__from">${wd.from}</span>` : ""}` : ""}</div>
       <div class="hour__rainbar"><span style="width:${Math.min(probVal, 100)}%"></span></div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
@@ -699,7 +732,7 @@ function renderConfidence(fc) {
     div.className = "var";
     div.innerHTML = `
       <div class="var__head">
-        <span class="var__label">${VAR_LABELS[v] || v}</span>
+        <span class="var__label">${varLabel(v)}</span>
         <span class="var__value" style="color:${color}">${pct}% · ${Math.round(sureShare * 100)}% sûres</span>
       </div>
       <div class="var__track">
@@ -753,7 +786,7 @@ $("#search-form").addEventListener("submit", async (e) => {
   // Nominatim address fallback) can take several silent seconds.
   show(el("loading"));
   const status = document.querySelector("#load-status");
-  if (status) status.textContent = "recherche du lieu…";
+  if (status) status.textContent = tr("loading_geocode");
   try {
     const loc = await geocode(q);
     state.lat = loc.lat;
@@ -812,6 +845,9 @@ let mapLayer = "radar";
 // fresh layer was built for every frame change.
 const radarLayerCache = {};
 let currentRadarIdx = -1;
+/* Wind arrows overlay. */
+let windLayer = null;
+let windTimer = null;
 
 function initMap() {
   if (map || !window.L) return;
@@ -829,6 +865,10 @@ function initMap() {
   }).addTo(map);
   marker.bindPopup(`<b>${state.name}</b>`);
   map.on("click", onMapClick);
+  map.on("moveend", () => {
+    clearTimeout(windTimer);
+    windTimer = setTimeout(refreshWindArrows, 600);
+  });
 }
 
 async function loadRadar() {
@@ -839,7 +879,7 @@ async function loadRadar() {
     const d = await r.json();
     const all = [...(d.radar?.past || []), ...(d.radar?.nowcast || [])];
     if (!all.length) {
-      status.textContent = "pas de données radar";
+      status.textContent = tr("radar_nodata");
       return;
     }
     radarFrames = all.map((f) => ({
@@ -848,6 +888,18 @@ async function loadRadar() {
       time: f.time,
       isNowcast: (f.path || "").includes("nowcast"),
     }));
+    // Future frames: the free radar feed stops at the last observation, so
+    // the model takes over — one synthesized frame per hour ahead, rendered
+    // from our own precipitation tiles (coarser ~10 km, labeled "prévision").
+    const lastT = radarFrames[radarFrames.length - 1]?.time ?? Math.floor(Date.now() / 1000);
+    for (let h = 1; h <= 6; h++) {
+      radarFrames.push({
+        model: true,
+        hourOffset: h,
+        time: lastT + h * 3600,
+        isNowcast: true,
+      });
+    }
     // Fresh frame index: cached layers point at stale tile paths.
     for (const k of Object.keys(radarLayerCache)) {
       const lyr = radarLayerCache[k];
@@ -865,7 +917,7 @@ async function loadRadar() {
     }
     if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
   } catch (e) {
-    status.textContent = "radar indisponible";
+    status.textContent = tr("radar_err");
   }
 }
 
@@ -881,26 +933,37 @@ function showRadarFrame(idx) {
   }
   let layer = radarLayerCache[radarIdx];
   if (!layer) {
-    const FrameLayer = L.TileLayer.extend({
-      getTileUrl(coords) {
-        const z = Math.max(5, Math.min(coords.z, 7));
-        const scale = Math.pow(2, coords.z - z);
-        return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
-      },
-    });
-    layer = new FrameLayer({ opacity: 0.75, maxNativeZoom: 7, noWrap: true });
+    if (f.model) {
+      // Model forecast frame: our own precip tiles at +h hours.
+      layer = L.tileLayer(`/tile/precip/{z}/{x}/{y}.png?h=${f.hourOffset}`, {
+        opacity: 0.7,
+        maxNativeZoom: 9,
+        noWrap: true,
+        className: "radar-model",
+      });
+    } else {
+      const FrameLayer = L.TileLayer.extend({
+        getTileUrl(coords) {
+          const z = Math.max(5, Math.min(coords.z, 7));
+          const scale = Math.pow(2, coords.z - z);
+          return `${f.host}${f.path}/256/${z}/${Math.floor(coords.x / scale)}/${Math.floor(coords.y / scale)}/2/1_1_0.png`;
+        },
+      });
+      layer = new FrameLayer({ opacity: 0.75, maxNativeZoom: 7, noWrap: true });
+    }
     radarLayerCache[radarIdx] = layer;
   }
   radarLayer = layer;
   currentRadarIdx = radarIdx;
   layer.addTo(map);
   const t = new Date(f.time * 1000);
-  const label = `${t.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} ${t.toLocaleTimeString("fr-FR")}${f.isNowcast ? " (prévision)" : ""}`;
-  el("radar-status").textContent = `radar ${label}`;
+  const hh = f.model ? `+${f.hourOffset} h` : t.toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR");
+  const label = `${t.toLocaleDateString(LANG === "en" ? "en-GB" : "fr-FR", { day: "numeric", month: "short" })} ${hh}${f.isNowcast ? " " + tr("radar_prev") : ""}`;
+  el("radar-status").textContent = `${tr("radar_label")} ${label}`;
   const slider = el("radar-slider");
   if (slider) slider.value = radarIdx;
   const tinfo = el("radar-time");
-  if (tinfo) tinfo.textContent = t.toLocaleTimeString("fr-FR");
+  if (tinfo) tinfo.textContent = hh;
 }
 
 function toggleRadarPlay() {
@@ -908,10 +971,10 @@ function toggleRadarPlay() {
   if (radarPlaying) {
     radarPlaying = false;
     clearInterval(radarTimer);
-    el("radar-play").textContent = "▶ Lecture";
+    el("radar-play").textContent = tr("play");
   } else {
     radarPlaying = true;
-    el("radar-play").textContent = "⏸ Pause";
+    el("radar-play").textContent = tr("pause");
     if (radarIdx >= radarFrames.length - 1) radarIdx = 0; // start from the oldest
     showRadarFrame(radarIdx);
     radarTimer = setInterval(() => {
@@ -979,6 +1042,48 @@ function applyMapLayer() {
 $("#map-layer").addEventListener("change", (e) => {
   mapLayer = e.target.value;
   applyMapLayer();
+});
+
+/* ---- Wind arrows overlay ---- */
+function windColor(kmh) {
+  if (kmh < 20) return "#22c55e";
+  if (kmh < 45) return "#eab308";
+  if (kmh < 70) return "#f97316";
+  return "#ef4444";
+}
+
+async function refreshWindArrows() {
+  if (!map || !el("wind-toggle").checked) return;
+  const b = map.getBounds();
+  try {
+    const r = await fetch(`/wind-grid?lat_n=${b.getNorth().toFixed(3)}&lon_w=${b.getWest().toFixed(3)}&lat_s=${b.getSouth().toFixed(3)}&lon_e=${b.getEast().toFixed(3)}&n=6`);
+    if (!r.ok) return;
+    const { points } = await r.json();
+    if (windLayer) map.removeLayer(windLayer);
+    windLayer = L.layerGroup();
+    for (const p of points) {
+      const color = windColor(p.kmh);
+      const icon = L.divIcon({
+        className: "",
+        html: `<div class="windarrow" style="transform:rotate(${(p.deg + 180) % 360}deg);color:${color}">➤</div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
+      const m = L.marker([p.lat, p.lon], { icon, interactive: false, keyboard: false });
+      m.bindTooltip(`${p.kmh} km/h`, { permanent: false, direction: "top", offset: [0, -8] });
+      windLayer.addLayer(m);
+    }
+    windLayer.addTo(map);
+  } catch { /* wind arrows are decorative: never break the map */ }
+}
+
+el("wind-toggle").addEventListener("change", (e) => {
+  if (e.target.checked) {
+    refreshWindArrows();
+  } else if (windLayer) {
+    map.removeLayer(windLayer);
+    windLayer = null;
+  }
 });
 
 $("#radar-play").addEventListener("click", toggleRadarPlay);
