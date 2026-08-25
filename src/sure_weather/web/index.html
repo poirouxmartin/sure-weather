@@ -86,12 +86,14 @@
         <button class="seg__btn" data-hours="168">7 jours</button>
       </div>
 
-      <!-- Temperature timeline -->
+      <!-- Hourly meteogram -->
       <section class="card timeline">
         <div class="card__head">
-          <h2 class="card__title">Température</h2>
+          <h2 class="card__title">Prochaines heures</h2>
           <span class="card__badge" id="timeline-badge"></span>
         </div>
+        <p class="card__hint">Courbe des températures, barres bleues = probabilité de pluie, bande grise = nuit.</p>
+        <div class="verdict" id="verdict"></div>
         <div class="timeline__chart" id="timeline-chart"></div>
       </section>
 

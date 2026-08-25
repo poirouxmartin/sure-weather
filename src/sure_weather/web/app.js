@@ -459,47 +459,191 @@ function renderSureBadge(summary) {
   badge.textContent = `${label} · ${share}% des valeurs sûres (conf. moy. ${avg}%)`;
 }
 
-function renderTimeline(times, byTime) {
-  const chart = el("timeline-chart");
-  chart.innerHTML = "";
-  const temps = times.map((t) => byTime[t].temperature_2m?.value ?? null).filter((v) => v !== null);
-  const min = Math.min(...temps, -99);
-  const max = Math.max(...temps, 99);
-  const span = Math.max(max - min, 1);
-  let avgConf = null;
-  const confs = times.map((t) => byTime[t].temperature_2m?.confidence).filter((c) => c !== null);
-  if (confs.length) avgConf = confs.reduce((a, b) => a + b, 0) / confs.length;
-  // Labels overlap once columns get narrower than the text: thin them out
-  // according to the real pixel width per column (mobile has ~15px columns
-  // where even 24 labels collide).
-  const width = chart.clientWidth || 600;
-  const pxPerCol = width / Math.max(times.length, 1);
-  const step = Math.max(1, Math.ceil(36 / Math.max(pxPerCol, 1)));
+/* ---- Visual verdict: the 24h answer without reading ---- */
 
-  times.forEach((t, idx) => {
-    const row = byTime[t];
-    const v = row.temperature_2m?.value;
-    if (v === null || v === undefined) return;
-    const pct = ((v - min) / span) * 100;
-    const cls = v < 10 ? "tl-bar--cold" : v < 25 ? "tl-bar--mild" : "tl-bar--hot";
-    const showLabel = idx % step === 0;
-    const col = document.createElement("div");
-    col.className = "tl-col";
-    col.innerHTML = `
-      <div class="tl-bar ${cls}" style="height:${Math.max(pct, 3)}%">
-        ${showLabel ? `<span class="tl-bar__temp">${round(v)}°</span>` : ""}
-      </div>
-      ${showLabel ? `<span class="tl-time">${fmtTime(t)}</span>` : ""}`;
-    chart.appendChild(col);
-  });
-  if (avgConf !== null) {
-    el("timeline-badge").textContent = `confiance moyenne ${Math.round(avgConf * 100)}%`;
-    el("timeline-badge").style.background = `rgba(15,157,88,.12)`;
-    el("timeline-badge").style.color = avgConf >= 0.95 ? "#0f9d58" : avgConf >= 0.9 ? "#d97706" : "#dc2626";
+function tempColor(v) {
+  if (v === null || v === undefined) return "#94a3b8";
+  if (v <= 0) return "#2563eb";
+  if (v <= 8) return "#0ea5e9";
+  if (v <= 16) return "#14b8a6";
+  if (v <= 23) return "#f59e0b";
+  if (v <= 30) return "#f97316";
+  return "#ef4444";
+}
+
+function renderVerdict(times, byTime) {
+  const wrap = el("verdict");
+  const rows = times.map((t) => ({ t, row: byTime[t] || {} }));
+  const pills = [];
+  // Rain: when does it start, how likely.
+  const rainHours = rows.filter(
+    (h) => (h.row.precipitation_probability?.value ?? 0) >= 50 || (h.row.precipitation?.value ?? 0) > 0.3
+  );
+  if (!rainHours.length) {
+    pills.push(`<span class="vpill vpill--ok"><span class="vpill__ic">☀️</span>Sec</span>`);
   } else {
-    el("timeline-badge").textContent = "non calibrée";
+    const first = rainHours[0];
+    const peak = Math.max(...rainHours.map((h) => h.row.precipitation_probability?.value ?? 0));
+    pills.push(
+      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>Pluie dès ${fmtTime(first.t)}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
+    );
+  }
+  // Temperature: max & min with hour of max.
+  const temps = rows.map((h) => h.row.temperature_2m?.value).filter((v) => v !== null && v !== undefined);
+  if (temps.length) {
+    const maxT = Math.max(...temps);
+    const minT = Math.min(...temps);
+    const at = rows.find((h) => h.row.temperature_2m?.value === maxT)?.t;
+    pills.push(
+      `<span class="vpill"><span class="vpill__ic">🌡️</span><b style="color:${tempColor(maxT)}">${round(maxT)}°</b> / ${round(minT)}°${at ? ` <span class="vpill__sub">à ${fmtTime(at)}</span>` : ""}</span>`
+    );
+  }
+  // Wind alert when gusts become unpleasant.
+  const gusts = rows.map((h) => (h.row.wind_gusts_10m?.value ?? 0) * 3.6);
+  const maxGust = Math.max(...gusts, 0);
+  if (maxGust >= 55) {
+    const at = rows[gusts.indexOf(maxGust)]?.t;
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">💨</span>Rafales ${Math.round(maxGust)} km/h${at ? ` à ${fmtTime(at)}` : ""}</span>`);
+  }
+  // Heat alert.
+  if (temps.length && Math.max(...temps) >= 32) {
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">🥵</span>Forte chaleur</span>`);
+  }
+  if (rows.length && rows.some((h) => h.row.temperature_2m?.value !== undefined && h.row.temperature_2m.value <= 0)) {
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">❄️</span>Gel</span>`);
+  }
+  wrap.innerHTML = pills.join("");
+}
+
+/* ---- Meteogram: icons, temp curve, rain bars, night bands ---- */
+
+let lastMeteo = null;
+
+function catmullRomPath(pts) {
+  // Smooth curve through points (Catmull-Rom converted to cubic beziers).
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += ` C ${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
+function renderTimeline(times, byTime) {
+  lastMeteo = { times, byTime };
+  const chart = el("timeline-chart");
+  renderVerdict(times, byTime);
+
+  const W = Math.max(chart.clientWidth || 600, 280);
+  const H = 200;
+  const padL = 6, padR = 6, padT = 40, padB = 22;
+  const rainH = 52; // bottom zone for rain bars
+  const n = times.length;
+  const colW = (W - padL - padR) / Math.max(n, 1);
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB - rainH;
+
+  const rows = times.map((t) => byTime[t] || {});
+  const temps = rows.map((r) => r.temperature_2m?.value).filter((v) => v !== null && v !== undefined);
+  const tMin = Math.min(...temps, 0);
+  const tMax = Math.max(...temps, 1);
+  const tSpan = Math.max(tMax - tMin, 1);
+  const xAt = (i) => padL + colW * (i + 0.5);
+  const yTemp = (v) => padT + (1 - (v - tMin) / tSpan) * innerH;
+  const yBase = H - padB;
+
+  const parts = [];
+  // Night bands + hour labels + rain bars + temp points.
+  const labelStep = Math.max(1, Math.ceil(38 / Math.max(colW, 1)));
+  const iconStep = Math.max(1, Math.ceil(34 / Math.max(colW, 1)));
+  const pts = [];
+  rows.forEach((row, i) => {
+    const x0 = padL + i * colW;
+    const hour = new Date(times[i]).getHours();
+    if (hour < 7 || hour >= 20) {
+      parts.push(`<rect x="${x0}" y="${padT - 14}" width="${colW}" height="${H - padB - padT + 14}" fill="rgba(16,27,48,.05)"/>`);
+    }
+    const prob = row.precipitation_probability?.value ?? 0;
+    const mm = row.precipitation?.value ?? 0;
+    if (prob >= 5 || mm > 0.05) {
+      const bh = Math.max((Math.max(prob, Math.min(mm * 20, 100)) / 100) * rainH, 3);
+      parts.push(
+        `<rect x="${(x0 + colW * 0.18).toFixed(1)}" y="${(yBase - bh).toFixed(1)}" width="${(colW * 0.64).toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="#3b82f6" opacity="${(0.25 + Math.min(prob, 100) / 100 * 0.55).toFixed(2)}"><title>pluie ${Math.round(prob)}%</title></rect>`
+      );
+    }
+    const v = row.temperature_2m?.value;
+    if (v !== null && v !== undefined) {
+      pts.push([xAt(i), yTemp(v), v]);
+    }
+    if (i % labelStep === 0) {
+      parts.push(`<text x="${xAt(i).toFixed(1)}" y="${H - 7}" text-anchor="middle" class="mg-hour">${fmtTime(times[i])}</text>`);
+    }
+    if (i % iconStep === 0) {
+      const wk = weatherKey({ ...row, time: times[i] });
+      parts.push(`<text x="${xAt(i).toFixed(1)}" y="${padT - 22}" text-anchor="middle" class="mg-icon">${wk.icon}</text>`);
+    }
+  });
+
+  // Temperature curve + gradient area.
+  if (pts.length > 1) {
+    const line = catmullRomPath(pts.map((p) => [p[0], p[1]]));
+    const area = line + ` L ${pts[pts.length - 1][0]},${padT} L ${pts[0][0]},${padT} Z`;
+    const stops = pts
+      .map((p, i) => `<stop offset="${((p[0] - padL) / innerW * 100).toFixed(1)}%" stop-color="${tempColor(p[2])}"/>`)
+      .join("");
+    parts.push(
+      `<defs><linearGradient id="mg-line" x1="0" y1="0" x2="1" y2="0">${stops}</linearGradient>` +
+      `<linearGradient id="mg-area" x1="0" y1="0" x2="0" y2="1">` +
+      `<stop offset="0" stop-color="#2f6bff" stop-opacity=".16"/><stop offset="1" stop-color="#2f6bff" stop-opacity="0"/></linearGradient></defs>`
+    );
+    parts.push(`<path d="${area}" fill="url(#mg-area)"/>`);
+    parts.push(`<path d="${line}" fill="none" stroke="url(#mg-line)" stroke-width="2.5" stroke-linecap="round"/>`);
+    // Temp labels (thin out to avoid collisions).
+    const tStep = Math.max(1, Math.ceil(40 / Math.max(colW, 1)));
+    pts.forEach((p, i) => {
+      if (i % tStep === 0) {
+        parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${tempColor(p[2])}">${round(p[2])}°</text>`);
+      }
+      parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${tempColor(p[2])}" stroke="#fff" stroke-width="1"/>`);
+    });
+  }
+
+  // "Now" marker on the first column.
+  parts.push(
+    `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 26}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
+    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 26}" class="mg-now">maintenant</text>`
+  );
+
+  chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
+
+  // Confidence badge (unchanged semantics).
+  const confs = times.map((t) => byTime[t].temperature_2m?.confidence).filter((c) => c !== null);
+  const badge = el("timeline-badge");
+  if (confs.length) {
+    const avg = confs.reduce((a, b) => a + b, 0) / confs.length;
+    badge.textContent = `confiance moyenne ${Math.round(avg * 100)}%`;
+    badge.style.background = `rgba(15,157,88,.12)`;
+    badge.style.color = avg >= 0.95 ? "#0f9d58" : avg >= 0.9 ? "#d97706" : "#dc2626";
+  } else {
+    badge.textContent = "non calibrée";
   }
 }
+
+window.addEventListener("resize", (() => {
+  let t = null;
+  return () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      if (lastMeteo && el("timeline-chart")) renderTimeline(lastMeteo.times, lastMeteo.byTime);
+    }, 150);
+  };
+})());
 
 function renderHours(times, byTime) {
   const wrap = el("hours");
@@ -524,20 +668,23 @@ function renderHours(times, byTime) {
       temp && temp.calibrated && temp.confidence < 0.98 && temp.low !== temp.high
         ? `${round(temp.low, 0)}–${round(temp.high, 0)}°`
         : "";
+    const probVal = prob?.value ?? 0;
     const card = document.createElement("div");
     card.className = "hour";
+    if (temp) card.style.setProperty("--tint", tempColor(temp.value));
     card.innerHTML = `
       <div class="hour__head">
         <span class="hour__time">${fmtTime(t)}</span>
         ${showDay ? `<span class="hour__day">${day}</span>` : ""}
       </div>
       <div class="hour__main">
-        <span class="hour__temp">${temp ? round(temp.value) + "°" : "—"}</span>
+        <span class="hour__temp" style="color:${temp ? tempColor(temp.value) : "inherit"}">${temp ? round(temp.value) + "°" : "—"}</span>
         <span class="hour__ic">${wk.icon}</span>
       </div>
       <div class="hour__range">${rng}</div>
-      <div class="hour__row">${prob && prob.value > 0 ? `💧 ${round(prob.value, 0)}%` : ""}</div>
+      <div class="hour__row">${probVal > 0 ? `💧 ${round(probVal, 0)}%` : '<span class="hour__dry">sec</span>'}</div>
       <div class="hour__row">${wind ? `🌬 ${kmh(wind)}${gust ? ` · raf. ${Math.round(gust.value * 3.6)}` : ""}` : ""}</div>
+      <div class="hour__rainbar"><span style="width:${Math.min(probVal, 100)}%"></span></div>
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
