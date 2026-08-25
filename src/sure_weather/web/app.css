@@ -238,13 +238,13 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .error__retry { flex: none; }
 .empty { text-align: center; color: var(--ink-faint); padding: 60px 0; font-size: 15px; }
 
-/* ---- Hero ---- */
+/* ---- Hero: a weather poster. Icon, place, verdict, one number. ---- */
 .hero {
   display: flex;
-  align-items: flex-start;
-  gap: 20px;
+  align-items: center;
+  gap: 18px;
   flex-wrap: wrap;
-  padding: 24px 26px 18px;
+  padding: 18px 22px;
   margin-bottom: 14px;
   background: rgba(255,255,255,.72);
   backdrop-filter: blur(14px) saturate(1.3);
@@ -253,39 +253,29 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
 }
-.hero__sky { font-size: 52px; line-height: 1; margin-top: 2px; filter: drop-shadow(0 4px 10px rgba(16,27,48,.15)); }
+.hero__sky { font-size: 58px; line-height: 1; filter: drop-shadow(0 4px 10px rgba(16,27,48,.15)); }
 .hero__main { min-width: 200px; flex: 1; }
-.hero__name { margin: 0; font-size: 23px; font-weight: 800; letter-spacing: -.5px; }
-.hero__meta { margin: 4px 0 0; font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.hero__summary { margin: 8px 0 0; font-size: 13.5px; color: var(--ink-soft); }
+.hero__name { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.5px; }
+.hero__row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .hero__now { margin-left: auto; text-align: right; }
 .hero__temp {
-  font-size: 56px; font-weight: 800; line-height: .95;
-  letter-spacing: -2.5px; font-variant-numeric: tabular-nums;
+  font-size: 64px; font-weight: 800; line-height: .95;
+  letter-spacing: -3px; font-variant-numeric: tabular-nums;
 }
-.hero__range { font-size: 12.5px; font-weight: 600; color: var(--ink-faint); margin-top: 4px; min-height: 15px; font-variant-numeric: tabular-nums; }
-.hero__feels { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; }
-.hero__details { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 10px; max-width: 340px; }
-.hero__details .chip {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--ink-soft);
-  background: rgba(16,27,48,.055);
+.hero__sub { font-size: 12px; color: var(--ink-faint); margin-top: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* ---- Badges: round, numeric, words on hover ---- */
+.hero__badges { display: flex; align-items: center; gap: 6px; }
+.sure-badge, .station-badge {
+  padding: 4px 11px;
   border-radius: 999px;
-  padding: 4px 10px;
-  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  font-weight: 800;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
 }
-.hero__badges {
-  flex-basis: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
+.sure-badge__ic { margin-right: 3px; }
 
 /* ---- Badges ---- */
 .sure-badge, .station-badge {
@@ -313,6 +303,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   margin-bottom: 14px;
   box-shadow: var(--shadow-sm);
 }
+.seg--inline { margin-bottom: 0; }
 .seg__btn {
   font-family: var(--font);
   border: none; background: transparent;
@@ -344,7 +335,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .card__hint { margin: 6px 0 14px; font-size: 12px; line-height: 1.55; color: var(--ink-faint); max-width: 70ch; }
 
 /* ---- Visual verdict: the at-a-glance 24h answer ---- */
-.verdict { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.verdict { display: flex; flex-wrap: wrap; gap: 6px; }
 .vpill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; font-weight: 700;
@@ -519,12 +510,11 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   .topbar { position: static; flex-direction: column; align-items: stretch; }
   .topbar__actions { min-width: 0; }
   .search { max-width: none; }
-  .hero { padding: 18px 16px 14px; gap: 12px; }
-  .hero__sky { font-size: 40px; }
-  .hero__temp { font-size: 46px; }
+  .hero { padding: 14px 16px; gap: 12px; }
+  .hero__sky { font-size: 44px; }
+  .hero__temp { font-size: 50px; }
+  .hero__sub { white-space: normal; }
   .hero__now { margin-left: 0; text-align: left; }
-  .hero__details { justify-content: flex-start; max-width: none; }
-  .hero__badges { margin-top: 10px; padding-top: 10px; }
   .loading {
     top: calc(10px + env(safe-area-inset-top));
     max-width: calc(100vw - 24px);

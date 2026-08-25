@@ -56,7 +56,7 @@
 
     <!-- Main content -->
     <main id="content" hidden>
-      <!-- Location -->
+      <!-- Location: a poster, not a form -->
       <section class="hero">
         <div class="hero__sky" id="sky-icon" aria-hidden="true">☀️</div>
         <div class="hero__main">
@@ -64,36 +64,30 @@
             <span id="loc-name">—</span>
             <button class="fav__toggle" id="fav-btn" type="button" title="Ajouter aux favoris">☆</button>
           </h1>
-          <p class="hero__meta" id="loc-meta"></p>
-          <p class="hero__summary" id="loc-summary"></p>
+          <div class="hero__row">
+            <div class="verdict" id="verdict"></div>
+            <div class="hero__badges">
+              <div class="hero__sure" id="sure-badge" hidden></div>
+              <div class="hero__stations" id="station-badge" hidden></div>
+            </div>
+          </div>
         </div>
         <div class="hero__now">
           <div class="hero__temp" id="now-temp">—°</div>
-          <div class="hero__range" id="now-range"></div>
-          <div class="hero__feels" id="now-feels"></div>
-          <div class="hero__details" id="now-details"></div>
-        </div>
-        <div class="hero__badges">
-          <div class="hero__sure" id="sure-badge" hidden></div>
-          <div class="hero__stations" id="station-badge" hidden></div>
+          <div class="hero__sub" id="now-sub"></div>
         </div>
       </section>
-
-      <!-- Range selector -->
-      <div class="seg" id="range-seg">
-        <button class="seg__btn seg__btn--active" data-hours="24">24 h</button>
-        <button class="seg__btn" data-hours="72">72 h</button>
-        <button class="seg__btn" data-hours="168">7 jours</button>
-      </div>
 
       <!-- Hourly meteogram -->
       <section class="card timeline">
         <div class="card__head">
           <h2 class="card__title">Prochaines heures</h2>
-          <span class="card__badge" id="timeline-badge"></span>
+          <div class="seg seg--inline" id="range-seg">
+            <button class="seg__btn seg__btn--active" data-hours="24">24 h</button>
+            <button class="seg__btn" data-hours="72">72 h</button>
+            <button class="seg__btn" data-hours="168">7 j</button>
+          </div>
         </div>
-        <p class="card__hint">Courbe des températures, barres bleues = probabilité de pluie, bande grise = nuit.</p>
-        <div class="verdict" id="verdict"></div>
         <div class="timeline__chart" id="timeline-chart"></div>
       </section>
 

@@ -352,41 +352,33 @@ function render(data) {
   const times = Object.keys(byTime).sort();
 
   el("loc-name").textContent = state.name;
-  el("loc-meta").textContent = `cellule ${data.cell} · mis à jour à ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}`;
   // Union of contributors across the whole window: the first item alone can
   // undercount (its group may lack station reports).
   const contributors = new Set(fc.flatMap((i) => i.contributors ?? []));
   const stationCount = [...contributors].filter((c) => c.startsWith("metar_")).length;
   const modelCount = [...contributors].filter((c) => !c.startsWith("metar_")).length;
   el("footer-note").textContent =
-    `Fusion de ${modelCount} modèles` +
+    `cellule ${data.cell} · maj ${new Date(data.generated_at).toLocaleTimeString("fr-FR")}` +
+    ` · fusion de ${modelCount} modèles` +
     (stationCount ? ` + ${stationCount} stations locales` : "") +
-    ` · correction de biais par cellule · source ${data.cell}`;
+    ` · correction de biais par cellule`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
 
-  /* Hero: current conditions */
+  /* Hero: current conditions — one glance, one line of small print */
   const nowRow = byTime[times[0]] || {};
   const wk = weatherKey({ ...nowRow, time: times[0] });
   el("sky-icon").textContent = wk.icon;
   document.body.dataset.sky = wk.sky;
   const t = nowRow.temperature_2m;
   el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
-  el("now-range").textContent =
-    t && t.calibrated && t.confidence < 0.98 ? `fourchette ${round(t.low)}–${round(t.high)}°` : "";
-  el("now-feels").textContent = t ? `Ressenti ${rangeText(t)}°` : "";
-  const det = [];
-  if (nowRow.wind_speed_10m) det.push(`💨 ${kmh(nowRow.wind_speed_10m)}`);
-  if (nowRow.relative_humidity_2m) det.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
-  if (nowRow.pressure_msl) det.push(`${rangeText(nowRow.pressure_msl, 0)} hPa`);
-  if (nowRow.precipitation_probability) det.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
-  el("now-details").innerHTML = det.map((d) => `<span class="chip">${d}</span>`).join("");
-  const rainSum = fc.filter((i) => i.variable === "precipitation").reduce((a, i) => a + (i.value || 0), 0);
-  const maxT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.max(a, i.value), -99);
-  const minT = fc.filter((i) => i.variable === "temperature_2m").reduce((a, i) => Math.min(a, i.value), 99);
-  el("loc-summary").textContent =
-    `${wk.icon} ${fc.length > 0 ? `Max ${round(maxT)}° / Min ${round(minT)}°` : ""}` +
-    (rainSum > 0.1 ? ` · ${round(rainSum, 1)} mm sur la période` : "");
+  const sub = [];
+  if (t) sub.push(`Ressenti ${rangeText(t)}°`);
+  if (nowRow.wind_speed_10m) sub.push(`💨 ${kmh(nowRow.wind_speed_10m)}`);
+  if (nowRow.relative_humidity_2m) sub.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
+  if (nowRow.precipitation_probability && nowRow.precipitation_probability.value > 0)
+    sub.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
+  el("now-sub").textContent = sub.join(" · ");
 
   /* Timeline */
   renderTimeline(times, byTime);
@@ -407,25 +399,22 @@ function render(data) {
   renderTable(times, byTime);
 }
 
-/* How many local stations feed the live consensus. */
+/* Local station badge: a number, the words live in the tooltip. */
 function renderStationBadge(fc) {
   const badge = el("station-badge");
   const first = fc.find((i) => i.contributors?.length);
-  if (!first) {
-    badge.hidden = true;
-    return;
-  }
-  const stations = new Set(first.contributors.filter((c) => c.startsWith("metar_")));
+  const stations = new Set(first?.contributors?.filter((c) => c.startsWith("metar_")) ?? []);
   if (!stations.size) {
     badge.hidden = true;
     return;
   }
   badge.hidden = false;
   badge.className = "station-badge";
-  badge.textContent = `📍 ${stations.size} station${stations.size > 1 ? "s" : ""} locale${stations.size > 1 ? "s" : ""}`;
+  badge.innerHTML = `📍 ${stations.size}`;
+  badge.title = `${stations.size} station${stations.size > 1 ? "s" : ""} météo locale${stations.size > 1 ? "s" : ""} en direct`;
 }
 
-/* Verdict banner: how much of the requested window is genuinely sure. */
+/* Trust pill: a colored check + the number; details on hover. */
 function renderSureBadge(summary) {
   const badge = el("sure-badge");
   if (!summary?.horizons) {
@@ -440,23 +429,24 @@ function renderSureBadge(summary) {
   }
   const share = Math.round(bucket.sure_share * 100);
   const avg = Math.round(bucket.avg_confidence * 100);
-  let cls, label;
+  let cls, icon;
   if (share >= 70) {
     cls = "sure--ok";
-    label = "✓ météo sûre";
+    icon = "✓";
   } else if (share >= 40) {
     cls = "sure--mid";
-    label = "fiable";
+    icon = "✓";
   } else if (share >= 15) {
     cls = "sure--warn";
-    label = "incertitude";
+    icon = "!";
   } else {
     cls = "sure--bad";
-    label = "pas fiable";
+    icon = "!";
   }
   badge.hidden = false;
   badge.className = `sure-badge ${cls}`;
-  badge.textContent = `${label} · ${share}% des valeurs sûres (conf. moy. ${avg}%)`;
+  badge.innerHTML = `<span class="sure-badge__ic">${icon}</span>${avg}%`;
+  badge.title = `${share}% des valeurs sûres · confiance moyenne ${avg}% sur ${h}`;
 }
 
 /* ---- Visual verdict: the 24h answer without reading ---- */
@@ -614,25 +604,13 @@ function renderTimeline(times, byTime) {
     });
   }
 
-  // "Now" marker on the first column.
+  // "Now" marker on the first column (label below the icon row).
   parts.push(
-    `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 26}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
-    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 26}" class="mg-now">maintenant</text>`
+    `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
+    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 2}" class="mg-now">maintenant</text>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
-
-  // Confidence badge (unchanged semantics).
-  const confs = times.map((t) => byTime[t].temperature_2m?.confidence).filter((c) => c !== null);
-  const badge = el("timeline-badge");
-  if (confs.length) {
-    const avg = confs.reduce((a, b) => a + b, 0) / confs.length;
-    badge.textContent = `confiance moyenne ${Math.round(avg * 100)}%`;
-    badge.style.background = `rgba(15,157,88,.12)`;
-    badge.style.color = avg >= 0.95 ? "#0f9d58" : avg >= 0.9 ? "#d97706" : "#dc2626";
-  } else {
-    badge.textContent = "non calibrée";
-  }
 }
 
 window.addEventListener("resize", (() => {
