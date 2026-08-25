@@ -1,4 +1,4 @@
-/* ==========================================================================
+﻿/* ==========================================================================
    Sure Weather — design system
    Une seule idée : la météo est le décor, l'interface se efface.
    Sky gradients portent l'ambiance ; les cartes sont calmes, lisibles,
@@ -34,6 +34,31 @@
   --shadow-sm: 0 1px 2px rgba(16, 27, 48, .06);
   --shadow-md: 0 1px 2px rgba(16, 27, 48, .05), 0 10px 30px rgba(16, 27, 48, .07);
   --shadow-lg: 0 4px 12px rgba(16, 27, 48, .08), 0 24px 60px rgba(16, 27, 48, .12);
+  --glass: rgba(255, 255, 255, .72);
+  --glass-border: rgba(255, 255, 255, .65);
+  --mg-night: rgba(16, 27, 48, .05);
+  --dot-stroke: #ffffff;
+}
+
+/* ---- Dark theme ---- */
+html[data-theme="dark"] {
+  --ink: #e7edf7;
+  --ink-soft: #a5b3cc;
+  --ink-faint: #667592;
+  --bg: #0c1424;
+  --card: #131e35;
+  --line: #223050;
+  --line-strong: #31426b;
+  --accent: #5b8cff;
+  --accent-ink: #82a8ff;
+  --accent-soft: rgba(91, 140, 255, .16);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .45);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, .5), 0 24px 60px rgba(0, 0, 0, .55);
+  --glass: rgba(15, 24, 44, .82);
+  --glass-border: rgba(255, 255, 255, .07);
+  --mg-night: rgba(0, 0, 0, .22);
+  --dot-stroke: #131e35;
 }
 
 * { box-sizing: border-box; }
@@ -61,6 +86,14 @@ body[data-sky="snow"]   { background: linear-gradient(180deg,#b3c2d4 0%,#d9e2ee 
 body[data-sky="storm"]  { background: linear-gradient(180deg,#232d3e 0%,#45546b 42%,#828fa5 68%,#f2f5fa 88%); }
 body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 38%,#f2f5fa 64%); }
 
+/* Dark sky variants: the atmosphere keeps its identity, muted. */
+html[data-theme="dark"] body[data-sky="day"]    { background: linear-gradient(180deg,#12233f 0%,#0f1b31 45%,#0c1424 75%); }
+html[data-theme="dark"] body[data-sky="night"]  { background: linear-gradient(180deg,#070d1c 0%,#0d1730 45%,#0c1424 80%); }
+html[data-theme="dark"] body[data-sky="rain"]   { background: linear-gradient(180deg,#1a2634 0%,#22344a 45%,#0c1424 85%); }
+html[data-theme="dark"] body[data-sky="snow"]   { background: linear-gradient(180deg,#2a3648 0%,#1b2740 50%,#0c1424 80%); }
+html[data-theme="dark"] body[data-sky="storm"]  { background: linear-gradient(180deg,#0d1220 0%,#1a2334 45%,#0c1424 85%); }
+html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(180deg,#14294a 0%,#12203c 40%,#0c1424 70%); }
+
 ::selection { background: rgba(47,107,255,.18); }
 
 .app {
@@ -78,10 +111,10 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   gap: 14px;
   flex-wrap: wrap;
   padding: 12px 16px;
-  background: rgba(255,255,255,.78);
+  background: var(--glass);
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid rgba(255,255,255,.6);
+  border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
   margin-bottom: 16px;
@@ -118,8 +151,8 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   box-shadow: 0 2px 10px rgba(47,107,255,.35);
 }
 .btn--primary:hover { filter: brightness(1.06); }
-.btn--ghost { background: rgba(255,255,255,.6); color: var(--ink); border-color: var(--line-strong); }
-.btn--ghost:hover { background: #fff; border-color: var(--ink-faint); }
+.btn--ghost { background: transparent; color: var(--ink); border-color: var(--line-strong); }
+.btn--ghost:hover { background: var(--accent-soft); border-color: var(--ink-faint); }
 
 .search { display: flex; gap: 8px; flex: 1 1 200px; max-width: 440px; min-width: 140px; }
 .search__input {
@@ -130,7 +163,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   padding: 9px 14px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
-  background: #fff;
+  background: var(--card);
   color: var(--ink);
   outline: none;
   transition: border-color .12s, box-shadow .12s;
@@ -151,7 +184,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   list-style: none;
   margin: 0;
   padding: 6px;
-  background: #fff;
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-lg);
@@ -246,10 +279,10 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   flex-wrap: wrap;
   padding: 18px 22px;
   margin-bottom: 14px;
-  background: rgba(255,255,255,.72);
+  background: var(--glass);
   backdrop-filter: blur(14px) saturate(1.3);
   -webkit-backdrop-filter: blur(14px) saturate(1.3);
-  border: 1px solid rgba(255,255,255,.65);
+  border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
 }
@@ -331,7 +364,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   background: rgba(15,157,88,.1); color: var(--green);
   white-space: nowrap;
 }
-.card__badge--muted { background: rgba(16,27,48,.06); color: var(--ink-soft); }
+.card__badge--muted { background: var(--mg-night); color: var(--ink-soft); }
 .card__hint { margin: 6px 0 14px; font-size: 12px; line-height: 1.55; color: var(--ink-faint); max-width: 70ch; }
 
 /* ---- Visual verdict: the at-a-glance 24h answer ---- */
@@ -339,7 +372,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .vpill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; font-weight: 700;
-  background: rgba(16,27,48,.055);
+  background: var(--mg-night);
   border-radius: 999px;
   padding: 7px 14px;
   color: var(--ink);
@@ -424,7 +457,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .hour__rainbar {
   height: 4px;
   border-radius: 999px;
-  background: rgba(16,27,48,.06);
+  background: var(--mg-night);
   overflow: hidden;
 }
 .hour__rainbar span {
@@ -441,7 +474,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 .hour__conf--hi { background: rgba(15,157,88,.11); color: var(--green); }
 .hour__conf--mid { background: rgba(217,119,6,.11); color: var(--amber); }
 .hour__conf--lo { background: rgba(220,38,38,.1); color: var(--red); }
-.hour__conf--na { background: rgba(16,27,48,.06); color: var(--ink-faint); }
+.hour__conf--na { background: var(--mg-night); color: var(--ink-faint); }
 
 /* ---- Confidence per variable ---- */
 .vars { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 13px 24px; }
@@ -463,7 +496,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   background: var(--card);
 }
 .table td { padding: 7px 10px; border-bottom: 1px solid var(--line); color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.table tbody tr:nth-child(even) td { background: rgba(16,27,48,.02); }
+.table tbody tr:nth-child(even) td { background: var(--mg-night); }
 .table tbody tr:last-child td { border-bottom: none; }
 .table tbody tr:hover td { background: var(--accent-soft); }
 .tr__day { font-size: 9.5px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .3px; margin-top: 1px; }
@@ -493,7 +526,7 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
 }
 .map__layers select {
   font-family: var(--font); font-size: 13px; padding: 8px 12px;
-  border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: #fff;
+  border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--card);
   color: var(--ink); outline: none; cursor: pointer;
 }
 .mapcard .card__hint { margin-bottom: 8px; }
@@ -527,3 +560,29 @@ body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 
   .table th, .table td { padding: 6px 7px; font-size: 11.5px; }
   .vars { grid-template-columns: 1fr; }
 }
+
+/* ---- Collapsible hourly detail ---- */
+.hourscard { padding: 0; overflow: hidden; }
+.hourscard summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.hourscard summary::-webkit-details-marker { display: none; }
+.hourscard summary:hover { background: var(--accent-soft); }
+.hourscard .chevron { margin-left: auto; color: var(--ink-faint); transition: transform .2s; }
+.hourscard[open] .chevron { transform: rotate(180deg); }
+.hourscard .hours { padding: 4px 20px 18px; }
+
+/* ---- Dark extras ---- */
+html[data-theme="dark"] .seg { background: rgba(255,255,255,.06); }
+html[data-theme="dark"] .vpill { background: rgba(255,255,255,.07); }
+html[data-theme="dark"] .vpill--ok { background: rgba(15,157,88,.2); }
+html[data-theme="dark"] .vpill--rain { background: rgba(91,140,255,.18); }
+html[data-theme="dark"] .vpill--warn { background: rgba(217,119,6,.2); }
+html[data-theme="dark"] .hour, html[data-theme="dark"] .card { background: var(--card); }
+html[data-theme="dark"] .loading { background: rgba(0,0,0,.75); }

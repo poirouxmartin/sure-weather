@@ -1,4 +1,4 @@
-/* Sure Weather PWA — vanilla JS, no build step. */
+﻿/* Sure Weather PWA — vanilla JS, no build step. */
 "use strict";
 
 if ("serviceWorker" in navigator) {
@@ -257,6 +257,19 @@ function locateMe() {
     );
   });
 }
+
+/* ---- Theme ---- */
+const themeBtn = document.getElementById("theme-btn");
+function applyThemeButton() {
+  themeBtn.textContent = document.documentElement.dataset.theme === "dark" ? "☀️" : "🌙";
+}
+themeBtn.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("sure-weather-theme", next);
+  applyThemeButton();
+});
+applyThemeButton();
 
 /* ---- Load ---- */
 
@@ -557,7 +570,7 @@ function renderTimeline(times, byTime) {
     const x0 = padL + i * colW;
     const hour = new Date(times[i]).getHours();
     if (hour < 7 || hour >= 20) {
-      parts.push(`<rect x="${x0}" y="${padT - 14}" width="${colW}" height="${H - padB - padT + 14}" fill="rgba(16,27,48,.05)"/>`);
+      parts.push(`<rect x="${x0}" y="${padT - 14}" width="${colW}" height="${H - padB - padT + 14}" style="fill:var(--mg-night)"/>`);
     }
     const prob = row.precipitation_probability?.value ?? 0;
     const mm = row.precipitation?.value ?? 0;
@@ -600,7 +613,7 @@ function renderTimeline(times, byTime) {
       if (i % tStep === 0) {
         parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${tempColor(p[2])}">${round(p[2])}°</text>`);
       }
-      parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${tempColor(p[2])}" stroke="#fff" stroke-width="1"/>`);
+      parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${tempColor(p[2])}" style="stroke:var(--dot-stroke)"/>`);
     });
   }
 
@@ -626,6 +639,8 @@ window.addEventListener("resize", (() => {
 function renderHours(times, byTime) {
   const wrap = el("hours");
   wrap.innerHTML = "";
+  const count = el("hours-count");
+  if (count) count.textContent = `${times.length} h`;
   let lastDay = null;
   for (const t of times) {
     const row = byTime[t] || {};

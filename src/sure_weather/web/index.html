@@ -10,6 +10,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="SureWeather" />
   <title>Sure Weather</title>
+  <script>
+    /* Theme before first paint to avoid a flash. */
+    const _th = localStorage.getItem("sure-weather-theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = _th;
+  </script>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
@@ -27,6 +33,7 @@
         <span class="topbar__name">Sure Weather</span>
       </div>
       <div class="topbar__actions">
+        <button class="btn btn--ghost" id="theme-btn" type="button" title="Thème clair/sombre">🌙</button>
         <button class="btn btn--ghost" id="locate-btn" type="button" title="Me localiser">
           <span class="ic">📍</span>
         </button>
@@ -91,8 +98,15 @@
         <div class="timeline__chart" id="timeline-chart"></div>
       </section>
 
-      <!-- Hourly cards -->
-      <section class="hours" id="hours"></section>
+      <!-- Hourly detail cards: collapsible, the meteogram is the primary view -->
+      <details class="card hourscard" id="hourscard">
+        <summary>
+          <span class="card__title" data-i18n="hours_title">Détail heure par heure</span>
+          <span class="card__badge card__badge--muted" id="hours-count"></span>
+          <span class="chevron" aria-hidden="true">▾</span>
+        </summary>
+        <section class="hours" id="hours"></section>
+      </details>
 
       <!-- Radar & map -->
       <section class="card mapcard">
