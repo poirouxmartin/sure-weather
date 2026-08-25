@@ -202,15 +202,50 @@ function weatherKey(row) {
   const rain = row.precipitation?.value ?? 0;
   const prob = row.precipitation_probability?.value ?? 0;
   if (rain > 5) return { icon: "⛈", sky: "storm" };
-  if (prob >= 70 || rain > 0.3) return { icon: "🌧", sky: "rain" };
-  if (cloud >= 70) return { icon: "☁️", sky: isNight(row.time) ? "night" : "partly" };
-  if (cloud >= 30) return { icon: "⛅", sky: isNight(row.time) ? "night" : "partly" };
-  return { icon: isNight(row.time) ? "🌙" : "☀️", sky: isNight(row.time) ? "night" : "day" };
+  if (prob >= 70 || rain > 0.3) return { sky: "rain" };
+  if (cloud >= 70) return { sky: isNight(row.time) ? "night" : "cloud" };
+  if (cloud >= 30) return { sky: isNight(row.time) ? "night" : "partly" };
+  return { sky: isNight(row.time) ? "night" : "day" };
+}
+
+
+/* ---- Weather icons: inline SVG, consistent across platforms ---- */
+const WEATHER_ART = {
+  day: '<g stroke="#f0b429" stroke-width="3" stroke-linecap="round">'
+     + '<line x1="24" y1="4" x2="24" y2="10"/><line x1="24" y1="38" x2="24" y2="44"/>'
+     + '<line x1="4" y1="24" x2="10" y2="24"/><line x1="38" y1="24" x2="44" y2="24"/>'
+     + '<line x1="10" y1="10" x2="14.5" y2="14.5"/><line x1="33.5" y1="33.5" x2="38" y2="38"/>'
+     + '<line x1="10" y1="38" x2="14.5" y2="33.5"/><line x1="33.5" y1="14.5" x2="38" y2="10"/></g>'
+     + '<circle cx="24" cy="24" r="9" fill="#f0b429"/>',
+  night: '<path d="M31 6 a17 17 0 1 0 11 29 a14 14 0 0 1 -11 -29 z" fill="#aebdd4"/>',
+  cloud: '<path d="M15 36 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#c2cfdd"/>',
+  partly: '<circle cx="17" cy="16" r="7" fill="#f0b429"/>'
+        + '<g stroke="#f0b429" stroke-width="2.4" stroke-linecap="round">'
+        + '<line x1="17" y1="3" x2="17" y2="7"/><line x1="5" y1="16" x2="9" y2="16"/>'
+        + '<line x1="8.5" y1="7.5" x2="11.5" y2="10.5"/></g>'
+        + '<path d="M18 40 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#d5deea"/>',
+  rain: '<path d="M15 32 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#c2cfdd"/>'
+      + '<g stroke="#5b9be0" stroke-width="3" stroke-linecap="round">'
+      + '<line x1="17" y1="36" x2="15" y2="42"/><line x1="25" y1="36" x2="23" y2="42"/>'
+      + '<line x1="33" y1="36" x2="31" y2="42"/></g>',
+  storm: '<path d="M15 32 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#aeb9c9"/>'
+       + '<path d="M24 34 l7 -9 h-5 l4 -8 -9 11 h5 z" fill="#eec33d"/>',
+  snow: '<path d="M15 32 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#c2cfdd"/>'
+      + '<g fill="#7cc4e8"><circle cx="17" cy="39" r="2.2"/><circle cx="25" cy="42" r="2.2"/>'
+      + '<circle cx="33" cy="39" r="2.2"/></g>',
+  fog: '<path d="M15 30 a8 8 0 0 1 -.6 -16 a10 10 0 0 1 19.4 -1.4 a7.5 7.5 0 0 1 1.2 14.9 z" fill="#c2cfdd"/>'
+     + '<g stroke="#9fb0c4" stroke-width="3" stroke-linecap="round">'
+     + '<line x1="12" y1="37" x2="36" y2="37"/><line x1="16" y1="43" x2="32" y2="43"/></g>',
+};
+
+function weatherSvg(sky, size) {
+  return `<svg viewBox="0 0 48 48" width="${size}" height="${size}" aria-hidden="true">${WEATHER_ART[sky] || WEATHER_ART.cloud}</svg>`;
 }
 
 function confBadge(c, calibrated) {
+
   if (!calibrated || c === null || c === undefined) {
-    return `<span class="hour__conf hour__conf--na">non cal.</span>`;
+    return `<span class="hour__conf hour__conf--na">${tr("conf_na")}</span>`;
   }
   if (c >= 0.98) return `<span class="hour__conf hour__conf--hi">sûr 98%+</span>`;
   if (c >= 0.95) return `<span class="hour__conf hour__conf--hi">95%+</span>`;
@@ -303,18 +338,46 @@ applyThemeButton();
 
 /* ---- Load ---- */
 
+/* Progressive, non-blocking load: the place name renders immediately with
+   shimmer placeholders, any cached data paints instantly, and the fresh
+   forecast (always the full 7 days) replaces the view when it lands. Range
+   switches (24h/72h/7j) then slice the cached data client-side: no network,
+   no reload. */
+const dataCache = new Map(); // "lat,lon" -> full 7-day forecast
+let currentData = null;
+
+function cacheKey() {
+  return `${state.lat.toFixed(3)},${state.lon.toFixed(3)}`;
+}
+
+function showSkeletons(name) {
+  el("loc-name").textContent = name;
+  el("now-temp").textContent = "—";
+  el("now-sub").textContent = "";
+  el("verdict").innerHTML =
+    `<span class="sk" style="width:130px;height:26px"></span>` +
+    `<span class="sk" style="width:96px;height:26px"></span>`;
+  el("timeline-chart").innerHTML = `<div class="sk" style="height:200px"></div>`;
+  el("hours").innerHTML =
+    `<div class="sk" style="height:84px"></div>`.repeat(8);
+  el("hours-count").textContent = "";
+  show(el("content"));
+  hide(el("error"));
+  hide(el("empty"));
+  document.body.classList.add("is-loading");
+}
+
 async function loadForecast() {
   const token = ++reqToken;
-  show(el("loading"));
+  const key = cacheKey();
+  const cached = dataCache.get(key);
+  showSkeletons(state.name);
+  hide(el("loading"));
+  if (cached) render(cached, state.hours); // instant paint, then refresh
+  else show(el("loading"));
   hide(el("error"));
   const spinner = el("loading");
-  const tip = spinner.querySelector("span");
   const status = spinner.querySelector("#load-status");
-  if (tip) tip.textContent = "Calcul de la confiance…";
-  if (status) status.textContent = "";
-  // Progress feedback: a brand-new zone needs a 3-month backfill on first
-  // visit (model analysis + reanalysis), which legitimately takes tens of
-  // seconds. Tell the user it's working instead of leaving a silent spinner.
   const progress = [
     tr("loading_src"),
     tr("loading_arch"),
@@ -326,31 +389,34 @@ async function loadForecast() {
   const tick = setInterval(() => {
     if (status && i < progress.length) status.textContent = progress[i++];
   }, 6000);
-  // A stalled connection must never spin forever: hard timeout, and the
-  // error card offers a retry.
   const ctrl = new AbortController();
   const abortTimer = setTimeout(() => ctrl.abort(), 45000);
   try {
     syncUrl();
-    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=${state.hours}`, { signal: ctrl.signal });
+    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=168`, { signal: ctrl.signal });
     clearTimeout(abortTimer);
-    if (!r.ok) throw new Error(`API ${r.status}`);
-    const data = await r.json();
     clearInterval(tick);
     if (token !== reqToken) return;
+    if (!r.ok) throw new Error(`API ${r.status}`);
+    const data = await r.json();
     if (!data.forecast || !data.forecast.length) {
       hide(el("loading"));
       hide(el("content"));
       show(el("empty"));
       return;
     }
-    render(data);
+    dataCache.set(key, data);
+    if (dataCache.size > 24) dataCache.delete(dataCache.keys().next().value);
+    document.body.classList.remove("is-loading");
+    hide(el("loading"));
+    render(data, state.hours);
   } catch (e) {
     clearTimeout(abortTimer);
     clearInterval(tick);
     if (token !== reqToken) return;
+    document.body.classList.remove("is-loading");
     hide(el("loading"));
-    hide(el("content"));
+    if (!cached) hide(el("content"));
     const msg = e.name === "AbortError"
       ? tr("err_slow")
       : e.message;
@@ -375,7 +441,32 @@ function showError(message) {
 
 /* ---- Render ---- */
 
-function render(data) {
+/* Client-side window summary (mirrors the server's bands) so range
+   switches never need a network round-trip. */
+function clientSummary(fc) {
+  const bands = [[0, 6, "3h"], [6, 24, "12h"], [24, 72, "48h"], [72, Infinity, "J+"]];
+  const horizons = {};
+  for (const item of fc) {
+    for (const [lo, hi, label] of bands) {
+      if (lo === 0 ? item.horizon_h <= hi : item.horizon_h > lo && item.horizon_h <= hi) {
+        (horizons[label] = horizons[label] || []).push(item.confidence);
+        break;
+      }
+    }
+  }
+  const out = { horizons: {} };
+  for (const [label, confs] of Object.entries(horizons)) {
+    out.horizons[label] = {
+      avg_confidence: confs.reduce((a, b) => a + b, 0) / confs.length,
+      sure_share: confs.filter((c) => c >= 0.98).length / confs.length,
+      n: confs.length,
+    };
+  }
+  return out;
+}
+
+function render(data, hours = state.hours) {
+  currentData = data;
   hide(el("loading"));
   hide(el("empty"));
   show(el("content"));
@@ -389,7 +480,8 @@ function render(data) {
 
   renderFavorites();
 
-  const fc = data.forecast;
+  const fc = data.forecast.filter((i) => i.horizon_h <= hours + 0.5);
+  const summary = clientSummary(fc);
   const byTime = {};
   for (const item of fc) (byTime[item.valid_at] = byTime[item.valid_at] || {})[item.variable] = item;
   const times = Object.keys(byTime).sort();
@@ -398,13 +490,20 @@ function render(data) {
   // Union of contributors across the whole window: the first item alone can
   // undercount (its group may lack station reports).
   const contributors = new Set(fc.flatMap((i) => i.contributors ?? []));
-  const stationCount = [...contributors].filter((c) => c.startsWith("metar_")).length;
-  const modelCount = [...contributors].filter((c) => !c.startsWith("metar_")).length;
-  el("footer-note").textContent = tr("footer", {
-    m: modelCount,
-    s: stationCount,
+  const stationSet = new Set([...contributors].filter((c) => c.startsWith("metar_")).map((c) => c.replace("metar_", "")));
+  const modelSet = new Set([...contributors].filter((c) => !c.startsWith("metar_")));
+  const stationCount = stationSet.size;
+  const modelCount = modelSet.size;
+  const modelNames = [...modelSet].sort();
+  const stationNames = [...stationSet].sort();
+  const shown = modelNames.slice(0, 3).join(", ") + (modelNames.length > 3 ? ` +${modelNames.length - 3}` : "");
+  const footerEl = el("footer-note");
+  footerEl.textContent = tr("sources", {
+    models: shown,
+    st: stationCount,
     u: new Date(data.generated_at).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR"),
   });
+  footerEl.title = `${tr("sources_full")}: ${modelNames.join(", ")} | ${stationNames.join(", ")}`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
   clearTimeout(windTimer);
@@ -413,13 +512,16 @@ function render(data) {
   /* Hero: current conditions — one glance, one line of small print */
   const nowRow = byTime[times[0]] || {};
   const wk = weatherKey({ ...nowRow, time: times[0] });
-  el("sky-icon").textContent = wk.icon;
+  el("sky-icon").innerHTML = weatherSvg(wk.sky, 56);
   document.body.dataset.sky = wk.sky;
   const t = nowRow.temperature_2m;
   el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
   const sub = [];
   if (t) sub.push(`${tr("now_feels")} ${rangeText(t)}°`);
-  if (nowRow.wind_speed_10m) sub.push(`💨 ${kmh(nowRow.wind_speed_10m)}`);
+  'if (nowRow.wind_speed_10m) {
+    const wd = windDir(nowRow);
+    sub.push(`<span class="hour__windarrow" style="transform:rotate(${wd ? (wd.deg + 180) % 360 : 0}deg)">➤</span> ${kmh(nowRow.wind_speed_10m)}${wd ? ` (${wd.from})` : ""}`);
+  }'
   if (nowRow.relative_humidity_2m) sub.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
   if (nowRow.precipitation_probability && nowRow.precipitation_probability.value > 0)
     sub.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
@@ -435,7 +537,7 @@ function render(data) {
   renderConfidence(fc);
 
   /* Global sure badge */
-  renderSureBadge(data.summary);
+  renderSureBadge(summary);
 
   /* Local station badge */
   renderStationBadge(fc);
@@ -621,7 +723,7 @@ function renderTimeline(times, byTime) {
     }
     if (i % iconStep === 0) {
       const wk = weatherKey({ ...row, time: times[i] });
-      parts.push(`<text x="${xAt(i).toFixed(1)}" y="${padT - 22}" text-anchor="middle" class="mg-icon">${wk.icon}</text>`);
+      parts.push(`<svg x="${(xAt(i) - 12).toFixed(1)}" y="${padT - 36}" width="24" height="24" viewBox="0 0 48 48">${WEATHER_ART[wk.sky] || WEATHER_ART.cloud}</svg>`);
     }
   });
 
@@ -652,7 +754,7 @@ function renderTimeline(times, byTime) {
   // "Now" marker on the first column (label below the icon row).
   parts.push(
     `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
-    `<text x="${(xAt(0) + 4).toFixed(1)}" y="${padT - 2}" class="mg-now">${tr("now_label")}</text>`
+    `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now">${tr("now_label")}</text>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
@@ -705,7 +807,7 @@ function renderHours(times, byTime) {
       </div>
       <div class="hour__main">
         <span class="hour__temp" style="color:${temp ? tempColor(temp.value) : "inherit"}">${temp ? round(temp.value) + "°" : "—"}</span>
-        <span class="hour__ic">${wk.icon}</span>
+        <span class="hour__ic">${weatherSvg(wk.sky, 22)}</span>
       </div>
       <div class="hour__range">${rng}</div>
       <div class="hour__row">${probVal > 0 ? `💧 ${round(probVal, 0)}%` : '<span class="hour__dry">' + tr("dry") + '</span>'}</div>
@@ -825,7 +927,9 @@ $("#range-seg").addEventListener("click", (e) => {
   document.querySelectorAll(".seg__btn").forEach((b) => b.classList.remove("seg__btn--active"));
   btn.classList.add("seg__btn--active");
   state.hours = parseInt(btn.dataset.hours, 10);
-  loadForecast();
+  syncUrl();
+  // Instant: the full 7 days are already in memory, just slice them.
+  if (currentData) render(currentData, state.hours);
 });
 
 /* ---- Map & radar ---- */

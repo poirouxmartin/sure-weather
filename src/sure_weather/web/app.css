@@ -6,7 +6,7 @@
    ========================================================================== */
 
 :root {
-  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --font: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
 
   /* Ink */
   --ink: #101b30;
@@ -79,12 +79,12 @@ body {
 }
 
 /* ---- Dynamic sky backgrounds ---- */
-body[data-sky="day"]    { background: linear-gradient(180deg,#6fb9f2 0%,#aed4f4 30%,#f2f5fa 62%); }
-body[data-sky="night"]  { background: linear-gradient(180deg,#0d1730 0%,#1c2f5c 38%,#41517c 58%,#f2f5fa 80%); }
-body[data-sky="rain"]   { background: linear-gradient(180deg,#465c6f 0%,#74889c 42%,#c2cdd8 68%,#f2f5fa 88%); }
-body[data-sky="snow"]   { background: linear-gradient(180deg,#b3c2d4 0%,#d9e2ee 48%,#f2f5fa 78%); }
-body[data-sky="storm"]  { background: linear-gradient(180deg,#232d3e 0%,#45546b 42%,#828fa5 68%,#f2f5fa 88%); }
-body[data-sky="partly"] { background: linear-gradient(180deg,#5fa7e4 0%,#9ccbf0 38%,#f2f5fa 64%); }
+body[data-sky="day"]    { background: linear-gradient(180deg,#9ccdf0 0%,#c8e0f6 32%,#f2f5fa 64%); }
+body[data-sky="night"]  { background: linear-gradient(180deg,#2c3d63 0%,#41517c 38%,#6d7ca3 58%,#f2f5fa 80%); }
+body[data-sky="rain"]   { background: linear-gradient(180deg,#5d7285 0%,#8ba0b3 44%,#ccd5de 70%,#f2f5fa 90%); }
+body[data-sky="snow"]   { background: linear-gradient(180deg,#c2cfdd 0%,#e0e8f1 50%,#f2f5fa 80%); }
+body[data-sky="storm"]  { background: linear-gradient(180deg,#39465c 0%,#5d6c82 44%,#98a4b6 70%,#f2f5fa 90%); }
+body[data-sky="partly"] { background: linear-gradient(180deg,#83b9e8 0%,#b6d7f2 40%,#f2f5fa 66%); }
 
 /* Dark sky variants: the atmosphere keeps its identity, muted. */
 html[data-theme="dark"] body[data-sky="day"]    { background: linear-gradient(180deg,#12233f 0%,#0f1b31 45%,#0c1424 75%); }
@@ -610,3 +610,24 @@ html[data-theme="dark"] .windarrow { text-shadow: 0 0 3px rgba(0,0,0,.9), 0 0 3p
 .radar-model {
   filter: saturate(.7) brightness(1.1);
 }
+/* ---- Skeleton shimmer (progressive, non-blocking loads) ---- */
+.sk {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--mg-night);
+}
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(120,150,200,.18), transparent);
+  animation: shimmer 1.4s infinite;
+}
+html[data-theme="dark"] .sk::after {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent);
+}
+@keyframes shimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .sk::after { animation: none; } }
