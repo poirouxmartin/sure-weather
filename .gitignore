@@ -7,5 +7,5 @@ data/
 *.db
 *.db-wal
 *.db-shm
-.envtools/
+.env
 tools/
