@@ -330,9 +330,15 @@ if (langBtn) {
 
 /* ---- Theme ---- */
 const themeBtn = document.getElementById("theme-btn");
+const THEME_SVGS = {
+  dark: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>',
+  light: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20.7 15.1a8.5 8.5 0 0 1-11.8-11.8 8.5 8.5 0 1 0 11.8 11.8z"/></svg>',
+};
+
 function applyThemeButton() {
   const dark = document.documentElement.dataset.theme === "dark";
-  themeBtn.textContent = dark ? "☀️" : "🌙";
+  themeBtn.innerHTML = dark ? THEME_SVGS.dark : THEME_SVGS.light;
+  themeBtn.title = dark ? tr("theme_light") : tr("theme_dark");
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = dark ? "#0c1424" : "#1b2a4a";
 }
@@ -779,10 +785,6 @@ function renderTimeline(times, byTime) {
   parts.push(
     `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
     `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now">${tr("now_label")}</text>`
-  );
-
-  parts.push(
-    `<g class="mg-legend"><circle cx="${W - 92}" cy="${padT - 30}" r="4" fill="#3b82f6" opacity=".8"/><text x="${W - 84}" y="${padT - 26}" class="mg-hour">${tr("legend_rain")}</text></g>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;

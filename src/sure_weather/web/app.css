@@ -286,7 +286,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
 }
-.hero__sky { font-size: 58px; line-height: 1; filter: drop-shadow(0 4px 10px rgba(16,27,48,.15)); }
+.hero__sky { font-size: 58px; line-height: 1; filter: drop-shadow(0 2px 5px rgba(16,27,48,.10)); }
 .hero__main { min-width: 200px; flex: 1; }
 .hero__name { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.5px; }
 .hero__row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
