@@ -518,14 +518,14 @@ function render(data, hours = state.hours) {
   el("now-temp").textContent = t ? `${round(t.value)}°` : "—";
   const sub = [];
   if (t) sub.push(`${tr("now_feels")} ${rangeText(t)}°`);
-  'if (nowRow.wind_speed_10m) {
+  if (nowRow.wind_speed_10m) {
     const wd = windDir(nowRow);
     sub.push(`<span class="hour__windarrow" style="transform:rotate(${wd ? (wd.deg + 180) % 360 : 0}deg)">➤</span> ${kmh(nowRow.wind_speed_10m)}${wd ? ` (${wd.from})` : ""}`);
-  }'
+  }
   if (nowRow.relative_humidity_2m) sub.push(`💧 ${rangeText(nowRow.relative_humidity_2m, 0)}%`);
   if (nowRow.precipitation_probability && nowRow.precipitation_probability.value > 0)
     sub.push(`☔ ${round(nowRow.precipitation_probability.value, 0)}%`);
-  el("now-sub").textContent = sub.join(" · ");
+  el("now-sub").innerHTML = sub.join(" · ");
 
   /* Timeline */
   renderTimeline(times, byTime);
