@@ -326,7 +326,10 @@ if (langBtn) {
 /* ---- Theme ---- */
 const themeBtn = document.getElementById("theme-btn");
 function applyThemeButton() {
-  themeBtn.textContent = document.documentElement.dataset.theme === "dark" ? "☀️" : "🌙";
+  const dark = document.documentElement.dataset.theme === "dark";
+  themeBtn.textContent = dark ? "☀️" : "🌙";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = dark ? "#0c1424" : "#1b2a4a";
 }
 themeBtn.addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -622,7 +625,7 @@ function renderVerdict(times, byTime) {
     const first = rainHours[0];
     const peak = Math.max(...rainHours.map((h) => h.row.precipitation_probability?.value ?? 0));
     pills.push(
-      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>${tr("v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
+      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>${tr(first.t === times[0] ? "v_rain_now" : "v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
     );
   }
   // Temperature: max & min with hour of max.
@@ -757,6 +760,10 @@ function renderTimeline(times, byTime) {
     `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now">${tr("now_label")}</text>`
   );
 
+  parts.push(
+    `<g class="mg-legend"><circle cx="${W - 58}" cy="${padT - 30}" r="4" fill="#3b82f6" opacity=".8"/><text x="${W - 50}" y="${padT - 26}" class="mg-hour">${tr("legend_rain")}</text></g>`
+  );
+
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
 }
 
@@ -774,7 +781,7 @@ function renderHours(times, byTime) {
   const wrap = el("hours");
   wrap.innerHTML = "";
   const count = el("hours-count");
-  if (count) count.textContent = `${times.length} h`;
+  if (count) count.textContent = `${state.hours} h`;
   let lastDay = null;
   for (const t of times) {
     const row = byTime[t] || {};
@@ -894,6 +901,7 @@ $("#search-form").addEventListener("submit", async (e) => {
     state.lat = loc.lat;
     state.lon = loc.lon;
     state.name = loc.name;
+    document.getElementById("search-input").value = "";
     await loadForecast();
   } catch (err) {
     hide(el("loading"));
@@ -919,6 +927,11 @@ $("#fav-btn").addEventListener("click", toggleFavorite);
 $("#fav-open").addEventListener("click", () => {
   const menu = el("fav-list");
   menu.hidden = !menu.hidden;
+});
+
+document.addEventListener("click", (e) => {
+  const menu = el("fav-list");
+  if (menu && !menu.hidden && !e.target.closest(".fav")) menu.hidden = true;
 });
 
 $("#range-seg").addEventListener("click", (e) => {
