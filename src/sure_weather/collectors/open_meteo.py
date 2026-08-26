@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -171,6 +171,28 @@ class OpenMeteoCollector:
                         )
                     )
         return samples
+
+    def fetch_sun(self, cell: Cell, days: int = 4) -> dict:
+        """Daily sunrise/sunset (UTC ISO) for the cell, next `days` days.
+
+        Drives the client's night bands and day/night icons with real solar
+        times instead of a fixed 6h-21h guess.
+        """
+        data = self._get(
+            f"{self.config.open_meteo_base}/forecast",
+            {
+                "latitude": cell.lat,
+                "longitude": cell.lon,
+                "daily": "sunrise,sunset",
+                "timezone": "UTC",
+                "forecast_days": days,
+            },
+        )
+        daily = data.get("daily") or {}
+        return {
+            "sunrise": daily.get("sunrise") or [],
+            "sunset": daily.get("sunset") or [],
+        }
 
     def fetch_historical(
         self,

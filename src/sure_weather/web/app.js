@@ -171,14 +171,7 @@ function round(v, d = 1) {
    coarse guess until the sun data lands. */
 let sunData = null;
 
-async function loadSun(lat, lon) {
-  try {
-    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=sunrise,sunset&timezone=UTC&forecast_days=4`);
-    if (!r.ok) return;
-    sunData = await r.json();
-    if (lastMeteo) renderTimeline(lastMeteo.times, lastMeteo.byTime);
-  } catch { /* decorative: keep the coarse fallback */ }
-}
+
 
 function isNight(iso) {
   const t = new Date(iso).getTime();
@@ -534,7 +527,7 @@ function render(data, hours = state.hours) {
   footerEl.title = `${tr("sources_full")}: ${modelNames.join(", ")} | ${stationNames.join(", ")}`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
-  loadSun(state.lat, state.lon);
+  if (data.sun) sunData = data.sun; // real solar times, server-provided
   clearTimeout(windTimer);
   windTimer = setTimeout(refreshWindArrows, 1200);
 

@@ -147,6 +147,7 @@ class WeatherService:
         self._fc_lock = threading.Lock()
         self._refreshed_at: dict[str, float] = {}
         self._calibrated_at: dict[str, float] = {}
+        self._sun_cache: dict[tuple[str, str], dict] = {}
         # Serializes stats computation: the boot warm-up and a concurrent
         # request must never aggregate the residual window twice (the first
         # request would otherwise wait for BOTH computations).
@@ -601,6 +602,17 @@ class WeatherService:
             "forecast": out,
             "summary": _summarize(out, hours),
         }
+        # Real solar times for the night bands / day-night icons: cached for
+        # the process lifetime (they shift by minutes between model runs).
+        try:
+            day_key = now.date().isoformat()
+            sun = self._sun_cache.get((center.key, day_key))
+            if sun is None:
+                sun = OpenMeteoCollector(self.config).fetch_sun(center)
+                self._sun_cache[(center.key, day_key)] = sun
+            payload["sun"] = {"daily": sun}
+        except Exception as exc:
+            logger.warning("sun times unavailable for %s: %s", center.key, exc)
         if out:
             self._forecast_store(key, payload)
         return payload
