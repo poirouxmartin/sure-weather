@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS residuals (
 );
 CREATE INDEX IF NOT EXISTS idx_res_provider ON residuals(provider, cell_key, variable, valid_at);
 CREATE INDEX IF NOT EXISTS idx_res_valid ON residuals(valid_at);
+CREATE TABLE IF NOT EXISTS stats_cache (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    fingerprint  TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    computed_at  TEXT NOT NULL
+);
 """
 
 # Pre-horizon-PK schema stored the same rows keyed without horizon_h: every
@@ -356,6 +362,61 @@ class Storage:
             "GROUP BY provider, cell_key, variable, horizon_h"
         )
         return self._conn.execute(sql, (since.isoformat(),)).fetchall()
+
+    def load_stats_cache(self, fingerprint: str):
+        """Persisted calibration stats for this exact residual fingerprint.
+
+        Survives restarts: recomputing the aggregation over millions of
+        residuals is the dominant cold-start cost. Returns a dict keyed
+        (provider, cell, variable, horizon) of ProviderStat, or None.
+        """
+        row = self._conn.execute(
+            "SELECT payload FROM stats_cache WHERE id=1 AND fingerprint=?",
+            (fingerprint,),
+        ).fetchone()
+        if not row:
+            return None
+        import json
+
+        from .fusion import ProviderStat
+
+        try:
+            raw = json.loads(row[0])
+            return {
+                (e["p"], e["c"], e["v"], e["h"]): ProviderStat(
+                    provider=e["p"],
+                    cell_key=e["c"],
+                    variable=e["v"],
+                    horizon_h=e["h"],
+                    samples=e["n"],
+                    bias=e["b"],
+                    rmse=e["r"],
+                    updated_at=datetime.fromisoformat(e["u"]),
+                )
+                for e in raw
+            }
+        except Exception:
+            return None
+
+    def save_stats_cache(self, fingerprint: str, stats: dict) -> None:
+        import json
+
+        payload = json.dumps(
+            [
+                {
+                    "p": k[0], "c": k[1], "v": k[2], "h": k[3],
+                    "n": st.samples, "b": st.bias, "r": st.rmse,
+                    "u": st.updated_at.isoformat(),
+                }
+                for k, st in stats.items()
+            ]
+        )
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO stats_cache (id, fingerprint, payload, computed_at) "
+                "VALUES (1, ?, ?, ?)",
+                (fingerprint, payload, datetime.now(timezone.utc).isoformat()),
+            )
 
     def insert_residuals(self, residuals: Iterable[Residual]) -> int:
         rows = [

@@ -204,6 +204,13 @@ class WeatherService:
             # request waited on the lock.
             if self._stats is not None and fp == self._stats_fingerprint:
                 return self._stats
+            # Persistent cache: a restart with an unchanged residual pool
+            # skips the multi-second aggregation entirely.
+            persisted = self.storage.load_stats_cache(str(fp))
+            if persisted is not None:
+                self._stats = persisted
+                self._stats_fingerprint = fp
+                return persisted
             stats: dict[tuple[str, str, str, float], ProviderStat] = {}
             now = datetime.now(timezone.utc)
             for provider, cell_key, variable, horizon_h, samples, bias, mse in (
@@ -225,6 +232,10 @@ class WeatherService:
             stats = _extrapolate_horizon_priors(stats)
             self._stats = stats
             self._stats_fingerprint = fp
+            try:
+                self.storage.save_stats_cache(str(fp), stats)
+            except Exception as exc:
+                logger.warning("stats cache save failed: %s", exc)
             return stats
 
     def _ensure_cell_data(self, center: Cell, lat: float, lon: float) -> None:
