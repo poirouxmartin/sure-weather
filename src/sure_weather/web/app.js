@@ -671,6 +671,13 @@ function renderVerdict(times, byTime) {
     const at = rows[gusts.indexOf(maxGust)]?.t;
     pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">💨</span>${tr("v_gust", { v: Math.round(maxGust) })}${at ? ` ${tr("v_at", { h: fmtTime(at) })}` : ""}</span>`);
   }
+  // Degraded data: stations only, no model run available right now.
+  const hasModel = rows.some((h) =>
+    Object.values(h.row).some((i) => i?.contributors?.some((c) => !c.startsWith("metar_")))
+  );
+  if (!hasModel) {
+    pills.push(`<span class="vpill vpill--warn" title="${tr("v_limited_tip")}"><span class="vpill__ic">⚠️</span>${tr("v_limited")}</span>`);
+  }
   // Heat alert.
   if (temps.length && Math.max(...temps) >= 32) {
     pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">🥵</span>${tr("v_heat")}</span>`);
