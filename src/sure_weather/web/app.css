@@ -286,23 +286,23 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
 }
-.hero__sky { font-size: 58px; line-height: 1; filter: drop-shadow(0 2px 5px rgba(16,27,48,.10)); }
+.hero__sky { font-size: 68px; line-height: 1; filter: drop-shadow(0 2px 5px rgba(16,27,48,.10)); }
 .hero__main { min-width: 200px; flex: 1; }
-.hero__name { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.5px; }
+.hero__name { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -.5px; }
 .hero__row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .hero__now { margin-left: auto; text-align: right; }
 .hero__temp {
-  font-size: 64px; font-weight: 800; line-height: .95;
-  letter-spacing: -3px; font-variant-numeric: tabular-nums;
+  font-size: 76px; font-weight: 800; line-height: .95;
+  letter-spacing: -3.5px; font-variant-numeric: tabular-nums;
 }
-.hero__sub { font-size: 12px; color: var(--ink-faint); margin-top: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hero__sub { font-size: 13px; color: var(--ink-soft); margin-top: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* ---- Badges: round, numeric, words on hover ---- */
 .hero__badges { display: flex; align-items: center; gap: 6px; }
 .sure-badge, .station-badge {
-  padding: 4px 11px;
+  padding: 5px 12px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 800;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -352,12 +352,12 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  padding: 18px 20px;
-  margin-bottom: 14px;
+  padding: 22px 24px;
+  margin-bottom: 18px;
   box-shadow: var(--shadow-sm);
 }
 .card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.card__title { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
+.card__title { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.2px; }
 .card__badge {
   font-size: 11.5px; font-weight: 600;
   padding: 3px 10px; border-radius: 999px;
@@ -370,16 +370,16 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 /* ---- Visual verdict: the at-a-glance 24h answer ---- */
 .verdict { display: flex; flex-wrap: wrap; gap: 6px; }
 .vpill {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 700;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 14.5px; font-weight: 700;
   background: var(--mg-night);
   border-radius: 999px;
-  padding: 7px 14px;
+  padding: 8px 16px;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.vpill__ic { font-size: 15px; line-height: 1; }
+.vpill__ic { font-size: 17px; line-height: 1; }
 .vpill__sub { font-weight: 500; color: var(--ink-faint); }
 .vpill--ok { background: rgba(15,157,88,.12); color: #0b7d47; }
 .vpill--rain { background: rgba(59,130,246,.13); color: #1d4ed8; }
@@ -390,8 +390,8 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   margin-top: 8px;
   width: 100%;
 }
-.mg-hour { font-size: 10px; font-weight: 600; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.mg-temp { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mg-hour { font-size: 11.5px; font-weight: 600; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.mg-temp { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mg-icon { font-size: 15px; }
 .mg-now { font-size: 9.5px; font-weight: 700; fill: var(--accent); }
 
@@ -408,7 +408,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  padding: 11px 12px;
+  padding: 13px 14px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -421,11 +421,11 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .hour__time { font-size: 12px; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
 .hour__day { font-size: 9.5px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hour__main { display: flex; align-items: center; gap: 7px; margin-top: 2px; }
-.hour__temp { font-size: 25px; font-weight: 800; letter-spacing: -1px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.hour__temp { font-size: 28px; font-weight: 800; letter-spacing: -1px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .hour__ic { font-size: 19px; line-height: 1; margin-left: auto; }
-.hour__range { font-size: 10.5px; font-weight: 600; color: var(--ink-faint); min-height: 13px; font-variant-numeric: tabular-nums; }
+.hour__range { font-size: 12px; font-weight: 600; color: var(--ink-faint); min-height: 13px; font-variant-numeric: tabular-nums; }
 .hour__row {
-  font-size: 11.5px; color: var(--ink-soft);
+  font-size: 12.5px; color: var(--ink-soft);
   display: flex; align-items: center; gap: 4px;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -433,7 +433,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .hour__dry { color: var(--ink-faint); opacity: .7; }
 /* Rain likelihood as a glanceable fill bar. */
 .hour__rainbar {
-  height: 4px;
+  height: 5px;
   border-radius: 999px;
   background: var(--mg-night);
   overflow: hidden;
@@ -446,7 +446,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 }
 .hour__conf {
   margin-top: auto;
-  font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
   width: fit-content;
 }
 .hour__conf--hi { background: rgba(15,157,88,.11); color: var(--green); }
@@ -458,9 +458,9 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .vars { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 13px 24px; }
 .var { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .var__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.var__label { font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.var__value { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.var__track { height: 7px; border-radius: 999px; background: rgba(16,27,48,.07); overflow: hidden; }
+.var__label { font-size: 13.5px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.var__value { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.var__track { height: 8px; border-radius: 999px; background: rgba(16,27,48,.07); overflow: hidden; }
 .var__bar { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.22,1,.36,1); }
 
 /* ---- Table ---- */
@@ -479,7 +479,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .table tbody tr:hover td { background: var(--accent-soft); }
 .tr__day { font-size: 9.5px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .3px; margin-top: 1px; }
 
-.footer { text-align: center; font-size: 11px; color: var(--ink-faint); padding: 12px 0; }
+.footer { text-align: center; font-size: 12px; color: var(--ink-faint); padding: 12px 0; }
 
 /* ---- Map / radar ---- */
 .mapcard { padding: 18px 20px; }

@@ -271,10 +271,10 @@ function rangeText(item, d = 1) {
 }
 
 function confColor(c) {
-  if (c >= 0.99) return "#0f9d58";
-  if (c >= 0.95) return "#2b6df6";
-  if (c >= 0.9) return "#d97706";
-  return "#dc2626";
+  if (c >= 0.97) return "#34a877";
+  if (c >= 0.93) return "#5b9be0";
+  if (c >= 0.88) return "#e0a63c";
+  return "#e07856";
 }
 
 /* ---- Geo ---- */
@@ -726,9 +726,9 @@ function renderTimeline(times, byTime) {
   renderVerdict(times, byTime);
 
   const W = Math.max(chart.clientWidth || 600, 280);
-  const H = 200;
-  const padL = 6, padR = 6, padT = 40, padB = 22;
-  const rainH = 52; // bottom zone for rain bars
+  const H = 240;
+  const padL = 8, padR = 8, padT = 52, padB = 26;
+  const rainH = 62; // bottom zone for rain bars
   const n = times.length;
   const colW = (W - padL - padR) / Math.max(n, 1);
   const innerW = W - padL - padR;
@@ -771,7 +771,7 @@ function renderTimeline(times, byTime) {
     }
     if (i % iconStep === 0) {
       const wk = weatherKey({ ...row, time: times[i] });
-      parts.push(`<svg x="${(xAt(i) - 12).toFixed(1)}" y="${padT - 36}" width="24" height="24" viewBox="0 0 48 48">${WEATHER_ART[wk.sky] || WEATHER_ART.cloud}</svg>`);
+      parts.push(`<svg x="${(xAt(i) - 12).toFixed(1)}" y="${padT - 36}" width="30" height="30" viewBox="0 0 48 48">${WEATHER_ART[wk.sky] || WEATHER_ART.cloud}</svg>`);
     }
   });
 
@@ -802,7 +802,7 @@ function renderTimeline(times, byTime) {
   // "Now" marker on the first column (label below the icon row).
   parts.push(
     `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
-    `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now">${tr("now_label")}</text>`
+    `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now" font-size="11">${tr("now_label")}</text>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
@@ -1094,6 +1094,10 @@ async function loadRadar() {
     }, 10 * 60 * 1000);
   } catch (e) {
     status.textContent = tr("radar_err");
+    // Transient upstream failures retry on their own.
+    setTimeout(() => {
+      if (map && !radarPlaying) loadRadar();
+    }, 30 * 1000);
   }
 }
 
