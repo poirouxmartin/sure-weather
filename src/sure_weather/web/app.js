@@ -1060,6 +1060,18 @@ async function loadRadar() {
       slider.value = radarFrames.length - 1;
     }
     if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
+    // Warm the model tiles (server + browser cache) so the first playback
+    // through the +1h..+6h forecast doesn't stall on blank tiles.
+    if (map && mapLayer === "radar") {
+      const z = map.getZoom(), c = map.getCenter();
+      const n = 1 << z;
+      const tx = Math.floor(((c.lng + 180) / 360) * n);
+      const ty = Math.floor(((1 - Math.log(Math.tan((c.lat * Math.PI) / 180)) / Math.PI) / 2) * n);
+      for (let h = 1; h <= 6; h++) {
+        const img = new Image();
+        img.src = `/tile/precip/${z}/${tx}/${ty}.png?h=${h}`;
+      }
+    }
     // Radar frames age (~10 min): refresh periodically while the tab lives.
     clearTimeout(radarRefreshTimer);
     radarRefreshTimer = setTimeout(() => {
