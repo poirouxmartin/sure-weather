@@ -125,18 +125,29 @@ class OpenMeteoCollector:
         data = self._get(f"{self.config.open_meteo_base}/forecast", params)
         samples = self._samples_from(data, models, cell)
         if include_high_res:
-            for m in HIGH_RES_MODELS:
-                if m in models:
-                    continue
-                try:
-                    hr_params = dict(params)
-                    hr_params["models"] = m
-                    hr = self._get(
-                        f"{self.config.open_meteo_base}/forecast", hr_params
-                    )
-                    samples.extend(self._samples_from(hr, [m], cell))
-                except httpx.HTTPError:
-                    continue
+            # Regional models are separate requests: run them concurrently
+            # with each other (best-effort) instead of serializing the
+            # first-visit backfill behind two extra round-trips.
+            from concurrent.futures import ThreadPoolExecutor
+
+            hr_models = [m for m in HIGH_RES_MODELS if m not in models]
+            if hr_models:
+                with ThreadPoolExecutor(max_workers=len(hr_models)) as pool:
+                    futs = {
+                        m: pool.submit(
+                            self._get,
+                            f"{self.config.open_meteo_base}/forecast",
+                            {**params, "models": m},
+                        )
+                        for m in hr_models
+                    }
+                    for m, fut in futs.items():
+                        try:
+                            samples.extend(
+                                self._samples_from(fut.result(), [m], cell)
+                            )
+                        except httpx.HTTPError:
+                            continue
         return samples
 
     def _samples_from(

@@ -397,38 +397,46 @@ async function loadForecast() {
   const tick = setInterval(() => {
     if (status && i < progress.length) status.textContent = progress[i++];
   }, 6000);
-  const ctrl = new AbortController();
-  const abortTimer = setTimeout(() => ctrl.abort(), 45000);
-  try {
-    syncUrl();
-    const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=168`, { signal: ctrl.signal });
-    clearTimeout(abortTimer);
-    clearInterval(tick);
-    if (token !== reqToken) return;
-    if (!r.ok) throw new Error(`API ${r.status}`);
-    const data = await r.json();
-    if (!data.forecast || !data.forecast.length) {
+  // A stalled/overloaded upstream must never dead-end: the first visit of a
+  // zone backfills months of data server-side, and every completed request
+  // is PERSISTED — so an automatic retry resumes where it stopped and
+  // usually completes. Only a second consecutive timeout surfaces the error.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const ctrl = new AbortController();
+    const abortTimer = setTimeout(() => ctrl.abort(), attempt === 1 ? 45000 : 60000);
+    try {
+      syncUrl();
+      if (attempt === 2 && status) status.textContent = tr("loading_retry");
+      const r = await fetch(`/weather?lat=${state.lat}&lon=${state.lon}&hours=168`, { signal: ctrl.signal });
+      clearTimeout(abortTimer);
+      clearInterval(tick);
+      if (token !== reqToken) return;
+      if (!r.ok) throw new Error(`API ${r.status}`);
+      const data = await r.json();
+      if (!data.forecast || !data.forecast.length) {
+        hide(el("loading"));
+        hide(el("content"));
+        show(el("empty"));
+        return;
+      }
+      dataCache.set(key, data);
+      if (dataCache.size > 24) dataCache.delete(dataCache.keys().next().value);
+      document.body.classList.remove("is-loading");
       hide(el("loading"));
-      hide(el("content"));
-      show(el("empty"));
+      render(data, state.hours);
+      return;
+    } catch (e) {
+      clearTimeout(abortTimer);
+      clearInterval(tick);
+      if (token !== reqToken) return;
+      const timedOut = e.name === "AbortError";
+      if (timedOut && attempt === 1) continue; // transparent retry
+      document.body.classList.remove("is-loading");
+      hide(el("loading"));
+      if (!cached) hide(el("content"));
+      showError(timedOut ? tr("err_slow") : e.message);
       return;
     }
-    dataCache.set(key, data);
-    if (dataCache.size > 24) dataCache.delete(dataCache.keys().next().value);
-    document.body.classList.remove("is-loading");
-    hide(el("loading"));
-    render(data, state.hours);
-  } catch (e) {
-    clearTimeout(abortTimer);
-    clearInterval(tick);
-    if (token !== reqToken) return;
-    document.body.classList.remove("is-loading");
-    hide(el("loading"));
-    if (!cached) hide(el("content"));
-    const msg = e.name === "AbortError"
-      ? tr("err_slow")
-      : e.message;
-    showError(msg);
   }
 }
 
