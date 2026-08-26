@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import math
@@ -148,6 +148,7 @@ class WeatherService:
         self._refreshed_at: dict[str, float] = {}
         self._calibrated_at: dict[str, float] = {}
         self._sun_cache: dict[tuple[str, str], dict] = {}
+        self._backfilling: set[str] = set()
         # Serializes stats computation: the boot warm-up and a concurrent
         # request must never aggregate the residual window twice (the first
         # request would otherwise wait for BOTH computations).
@@ -239,87 +240,121 @@ class WeatherService:
                 logger.warning("stats cache save failed: %s", exc)
             return stats
 
-    def _ensure_cell_data(self, center: Cell, lat: float, lon: float) -> None:
-        """Fetch model forecast + reanalysis for a cell on first demand.
+    def _ensure_cell_data(self, center: Cell, lat: float, lon: float) -> bool:
+        """Make sure a cell can serve a forecast, blocking as little as possible.
 
-        A cell with no stored data gets a 92-day analysis backfill so it is
-        immediately calibrated: model analysis (past) + reanalysis (ground
-        truth) are collected, residuals computed, and the cell joins the grid.
-        Local METAR stations around the queried point are ingested too.
+        Returns True when the stored coverage reaches the requested window
+        (the response is complete). Returns False when a background job is
+        upgrading the zone (first visit, aged run): the caller marks the
+        payload partial and the client re-fetches shortly after.
+        - brand-new cell: one fast single-model 7-day request, then the full
+          backfill (all models, 92-day calibration, stations) in background;
+        - known cell: everything (run refresh, calibration) in background.
         """
-        row = self.storage._conn.execute(
-            "SELECT COUNT(*) FROM forecasts WHERE cell_key=?", (center.key,)
+        now = datetime.now(timezone.utc)
+        reach = self.storage._conn.execute(
+            "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=?",
+            (center.key,),
         ).fetchone()
-        if row and row[0] > 0:
-            # Cell is known: refresh local stations cheaply so the "now"
-            # consensus stays honest on repeat searches of the same zone,
-            # but skip when we just ingested this zone minutes ago.
-            fresh = self.storage._conn.execute(
-                "SELECT MAX(time) FROM observations WHERE cell_key=? "
-                "AND provider LIKE 'metar_%'",
-                (center.key,),
-            ).fetchone()
-            if not (fresh and fresh[0]):
-                self._ingest_nearby_stations(lat, lon)
-            else:
-                if (datetime.now(timezone.utc) - _parse_dt(fresh[0])) >= timedelta(
-                    hours=1
-                ):
-                    self._ingest_nearby_stations(lat, lon)
-            # Refresh the model run if the stored one no longer reaches into
-            # the future (e.g. a backfill that only fetched 1 forecast day, or
-            # a run that simply aged out). Otherwise the window filter in
-            # forecast() drops every result and the zone shows "no data".
-            self._refresh_model_run_if_stale(center)
-            # Keep calibration alive in the background: the first cycle for a
-            # cell is heavy (archive fetch + residual matching over days), it
-            # must never sit inside the user's request.
-            self._schedule_calibration(center)
+        has_data = bool(reach and reach[0])
+        reach_ok = has_data and _parse_dt(reach[0]) >= now + timedelta(hours=24)
+
+        if not has_data:
+            # Brand-new cell: a FAST single-model 7-day fetch (one request,
+            # ~1-2s) gives full hourly coverage immediately; the complete
+            # multi-model + 92-day calibration backfill runs in background
+            # and upgrades the zone afterwards.
+            self.storage.upsert_cells([(center.key, center.lat, center.lon)])
+            try:
+                fast = OpenMeteoCollector(self.config).fetch_forecast(
+                    center,
+                    models=["gfs_seamless"],
+                    forecast_days=7,
+                    include_high_res=False,
+                )
+                self.storage.insert_forecasts(fast)
+                self._forecast_invalidate()
+            except Exception as exc:
+                logger.warning("fast first fetch failed for %s: %s", center.key, exc)
+            self._schedule_full_backfill(center, lat, lon)
+            return False
+
+        # Known cell: refresh local stations cheaply so the "now" consensus
+        # stays honest, but skip when we just ingested this zone minutes ago.
+        fresh = self.storage._conn.execute(
+            "SELECT MAX(time) FROM observations WHERE cell_key=? "
+            "AND provider LIKE 'metar_%'",
+            (center.key,),
+        ).fetchone()
+        if not (fresh and fresh[0]):
+            self._ingest_nearby_stations(lat, lon)
+        elif (datetime.now(timezone.utc) - _parse_dt(fresh[0])) >= timedelta(hours=1):
+            self._ingest_nearby_stations(lat, lon)
+        # Run maintenance in the BACKGROUND (7-day refresh, calibration):
+        # the user is served from what is already stored, stale-but-covering.
+        self._schedule_refresh(center)
+        self._schedule_calibration(center)
+        return reach_ok
+
+    def _schedule_refresh(self, center: Cell) -> None:
+        """Run the 7-day refresh in background: serve stale meanwhile."""
+        threading.Thread(
+            target=self._refresh_model_run_if_stale, args=(center,), daemon=True
+        ).start()
+
+    def _schedule_full_backfill(self, center: Cell, lat: float, lon: float) -> None:
+        """Run the complete zone bootstrap in background (guarded)."""
+        if center.key in self._backfilling:
             return
-        for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
-            self.storage.upsert_provider(Provider(name=m, kind="model"))
-        self.storage.upsert_cells([(center.key, center.lat, center.lon)])
+        self._backfilling.add(center.key)
+        threading.Thread(
+            target=self._full_backfill, args=(center, lat, lon), daemon=True
+        ).start()
 
-        collector = OpenMeteoCollector(self.config)
+    def _full_backfill(self, center: Cell, lat: float, lon: float) -> None:
+        """Complete zone bootstrap, off the request path.
 
-        # The 92-day model forecast and the reanalysis archive are independent
-        # heavy HTTP requests: fetch them concurrently to cut the first-visit
-        # latency of a brand-new zone roughly in half.
-        from concurrent.futures import ThreadPoolExecutor
+        Upgrades the fast single-model fetch to the full multi-model run,
+        then the 92-day analysis + reanalysis + residuals (calibration) and
+        the local METAR stations.
+        """
+        try:
+            collector = OpenMeteoCollector(self.config)
+            for m in FORECAST_MODELS + HIGH_RES_MODELS + ARCHIVE_MODELS:
+                self.storage.upsert_provider(Provider(name=m, kind="model"))
+            try:
+                full = collector.fetch_forecast(center, forecast_days=7)
+                self.storage.insert_forecasts(full)
+                self._forecast_invalidate()
+            except Exception as exc:
+                logger.warning("full run fetch failed for %s: %s", center.key, exc)
 
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=92)
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=92)
+            try:
+                obs = collector.fetch_historical(center, start, end)
+                self.storage.insert_observations(obs)
+            except Exception as exc:
+                logger.warning("archive fetch failed for %s: %s", center.key, exc)
 
-        def _fetch_forecast():
-            return collector.fetch_forecast(center, forecast_days=1, past_days=92)
+            try:
+                forecasts = self.storage.forecasts_in_window(
+                    [center.key], list(ALL_VARIABLES), start, end
+                )
+                observations = self.storage.observations_in_window(
+                    [center.key], list(OBSERVABLE_VARIABLES), start, end
+                )
+                kinds = {pr.name: pr.kind for pr in self.storage.get_providers()}
+                residuals = compute_residuals(forecasts, observations, kinds)
+                self.storage.insert_residuals(residuals)
+            except Exception as exc:
+                logger.warning("residual matching failed for %s: %s", center.key, exc)
 
-        def _fetch_historical():
-            return collector.fetch_historical(center, start, end)
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_fc = pool.submit(_fetch_forecast)
-            f_obs = pool.submit(_fetch_historical)
-            samples = f_fc.result()
-            obs = f_obs.result()
-
-        self.storage.insert_forecasts(samples)
-        self.storage.insert_observations(obs)
-        self._forecast_invalidate()
-
-        forecasts = self.storage.forecasts_in_window(
-            [center.key], list(ALL_VARIABLES), start, end
-        )
-        observations = self.storage.observations_in_window(
-            [center.key], list(OBSERVABLE_VARIABLES), start, end
-        )
-        kinds = {p.name: p.kind for p in self.storage.get_providers()}
-        residuals = compute_residuals(forecasts, observations, kinds)
-        self.storage.insert_residuals(residuals)
-
-        # Discover and ingest local METAR stations around the cell: the "as
-        # many sources as possible in the corner" promise. Their observations
-        # feed the live consensus and the station-first residual matching.
-        self._ingest_nearby_stations(lat, lon)
+            self._ingest_nearby_stations(lat, lon)
+            self._schedule_calibration(center)
+            logger.info("full backfill done for %s", center.key)
+        finally:
+            self._backfilling.discard(center.key)
 
     def _refresh_model_run_if_stale(self, center: Cell) -> None:
         """Re-collect a fast 7-day forecast when the stored run is stale.
@@ -541,7 +576,7 @@ class WeatherService:
         if cached is not None:
             return cached
         center = cell_from_point(lat, lon, self.config)
-        self._ensure_cell_data(center, lat, lon)
+        sufficient = self._ensure_cell_data(center, lat, lon)
         # Model forecasts are fetched per-cell; the fusion targets the point's
         # own cell (global NWP models do not vary meaningfully over ~11 km,
         # and spatial stats interpolation already covers the bias). Nearby
@@ -601,6 +636,7 @@ class WeatherService:
             "generated_at": now.isoformat(),
             "forecast": out,
             "summary": _summarize(out, hours),
+            "partial": (not sufficient) or (not out),
         }
         # Real solar times for the night bands / day-night icons: cached for
         # the process lifetime (they shift by minutes between model runs).

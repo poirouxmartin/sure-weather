@@ -358,6 +358,7 @@ applyThemeButton();
    switches (24h/72h/7j) then slice the cached data client-side: no network,
    no reload. */
 const dataCache = new Map(); // "lat,lon" -> full 7-day forecast
+const partialTries = new Map(); // "lat,lon" -> upgrade attempts
 let currentData = null;
 
 function cacheKey() {
@@ -430,6 +431,18 @@ async function loadForecast() {
       document.body.classList.remove("is-loading");
       hide(el("loading"));
       render(data, state.hours);
+      // Partial response (background backfill still running): upgrade soon.
+      if (data.partial) {
+        const tries = (partialTries.get(key) || 0) + 1;
+        partialTries.set(key, tries);
+        if (tries <= 3) {
+          setTimeout(() => {
+            if (token === reqToken) loadForecast();
+          }, 20000);
+        }
+      } else {
+        partialTries.delete(key);
+      }
       return;
     } catch (e) {
       clearTimeout(abortTimer);
@@ -551,6 +564,7 @@ function render(data, hours = state.hours) {
   el("now-sub").innerHTML = sub.join(" · ");
 
   /* Timeline */
+  window.__partialData = !!currentData?.partial;
   renderTimeline(times, byTime);
 
   /* Hourly cards */
@@ -671,6 +685,10 @@ function renderVerdict(times, byTime) {
   );
   if (!hasModel) {
     pills.push(`<span class="vpill vpill--warn" title="${tr("v_limited_tip")}"><span class="vpill__ic">⚠️</span>${tr("v_limited")}</span>`);
+  }
+  // Single model / partial backfill: the full fusion is being assembled.
+  if (window.__partialData) {
+    pills.push(`<span class="vpill" title="${tr("v_partial_tip")}"><span class="vpill__ic">⏳</span>${tr("v_partial")}</span>`);
   }
   // Heat alert.
   if (temps.length && Math.max(...temps) >= 32) {
