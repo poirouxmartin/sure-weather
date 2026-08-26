@@ -396,28 +396,6 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .mg-now { font-size: 9.5px; font-weight: 700; fill: var(--accent); }
 
 /* ---- Timeline chart (legacy bars, kept for fallback) ---- */
-.tl-col { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; height: 100%; justify-content: flex-end; }
-.tl-bar {
-  width: 100%;
-  max-width: 30px;
-  border-radius: 5px 5px 2px 2px;
-  transition: height .4s cubic-bezier(.22,1,.36,1);
-  position: relative;
-}
-.tl-bar--cold { background: linear-gradient(180deg,#3b82f6,#93c5fd); }
-.tl-bar--mild { background: linear-gradient(180deg,#f59e0b,#fcd34d); }
-.tl-bar--hot  { background: linear-gradient(180deg,#ef4444,#fb923c); }
-.tl-bar__temp {
-  position: absolute;
-  top: -17px; left: 50%;
-  transform: translateX(-50%);
-  font-size: 10.5px; font-weight: 700;
-  color: var(--ink-soft);
-  white-space: nowrap;
-  width: max-content;
-  font-variant-numeric: tabular-nums;
-}
-.tl-time { font-size: 9.5px; color: var(--ink-faint); margin-top: 5px; white-space: nowrap; width: max-content; font-variant-numeric: tabular-nums; }
 
 /* ---- Hourly cards ---- */
 .hours {

@@ -22,19 +22,6 @@ function varLabel(v) {
   return tr(VAR_LABELS_KEYS[v] || v);
 }
 
-const VAR_UNITS = {
-  temperature_2m: "°C",
-  dew_point_2m: "°C",
-  relative_humidity_2m: "%",
-  precipitation: "mm",
-  precipitation_probability: "%",
-  cloud_cover: "%",
-  wind_speed_10m: "m/s",
-  wind_gusts_10m: "m/s",
-  pressure_msl: "hPa",
-  visibility: "m",
-};
-
 const VAR_ORDER = [
   "temperature_2m",
   "dew_point_2m",
