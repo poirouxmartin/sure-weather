@@ -166,7 +166,32 @@ function round(v, d = 1) {
   return v.toFixed(d);
 }
 
+/* Day/night from REAL sunrise/sunset (Open-Meteo daily), not a fixed
+   6h-21h guess that breaks by ±3h depending on season. Falls back to the
+   coarse guess until the sun data lands. */
+let sunData = null;
+
+async function loadSun(lat, lon) {
+  try {
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=sunrise,sunset&timezone=UTC&forecast_days=4`);
+    if (!r.ok) return;
+    sunData = await r.json();
+    if (lastMeteo) renderTimeline(lastMeteo.times, lastMeteo.byTime);
+  } catch { /* decorative: keep the coarse fallback */ }
+}
+
 function isNight(iso) {
+  const t = new Date(iso).getTime();
+  const d = sunData?.daily;
+  if (d?.sunrise?.length && d?.sunset?.length) {
+    for (let i = 0; i < d.sunrise.length; i++) {
+      const sr = new Date(d.sunrise[i]).getTime();
+      const ss = new Date(d.sunset[i]).getTime();
+      if (t < sr) return i === 0 ? true : t < ss - 36e5 * 8 ? true : false;
+      if (t < ss) return false;
+    }
+    return true;
+  }
   const h = new Date(iso).getHours();
   return h < 6 || h >= 21;
 }
@@ -509,6 +534,7 @@ function render(data, hours = state.hours) {
   footerEl.title = `${tr("sources_full")}: ${modelNames.join(", ")} | ${stationNames.join(", ")}`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
+  loadSun(state.lat, state.lon);
   clearTimeout(windTimer);
   windTimer = setTimeout(refreshWindArrows, 1200);
 
@@ -761,7 +787,7 @@ function renderTimeline(times, byTime) {
   );
 
   parts.push(
-    `<g class="mg-legend"><circle cx="${W - 58}" cy="${padT - 30}" r="4" fill="#3b82f6" opacity=".8"/><text x="${W - 50}" y="${padT - 26}" class="mg-hour">${tr("legend_rain")}</text></g>`
+    `<g class="mg-legend"><circle cx="${W - 92}" cy="${padT - 30}" r="4" fill="#3b82f6" opacity=".8"/><text x="${W - 84}" y="${padT - 26}" class="mg-hour">${tr("legend_rain")}</text></g>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
@@ -954,6 +980,7 @@ let marker = null;
 let radarFrames = [];
 let radarPlaying = false;
 let radarTimer = null;
+let radarRefreshTimer = null;
 let radarIdx = 0;
 let mapLayer = "radar";
 // One TileLayer instance per frame, created lazily on first display and kept:
@@ -1033,6 +1060,11 @@ async function loadRadar() {
       slider.value = radarFrames.length - 1;
     }
     if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
+    // Radar frames age (~10 min): refresh periodically while the tab lives.
+    clearTimeout(radarRefreshTimer);
+    radarRefreshTimer = setTimeout(() => {
+      if (mapLayer === "radar" && !radarPlaying) loadRadar();
+    }, 10 * 60 * 1000);
   } catch (e) {
     status.textContent = tr("radar_err");
   }
