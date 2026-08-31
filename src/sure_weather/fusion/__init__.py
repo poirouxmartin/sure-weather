@@ -33,6 +33,7 @@ _VARIABLE_TOLERANCE = {
     "wind_gusts_10m": 3.0,
     # Direction is an angle: "within +/- 30 degrees of the true flow".
     "wind_direction_10m": 30.0,
+    "uv_index": 1.0,
     "pressure_msl": 2.0,
     "visibility": 5000.0,
 }
@@ -48,6 +49,7 @@ _VARIABLE_BOUNDS = {
     "wind_speed_10m": (0.0, None),
     "wind_gusts_10m": (0.0, None),
     "wind_direction_10m": (0.0, 360.0),
+    "uv_index": (0.0, 12.0),
     "pressure_msl": (None, None),
     "visibility": (0.0, None),
 }

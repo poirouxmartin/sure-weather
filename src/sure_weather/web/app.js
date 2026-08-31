@@ -14,6 +14,8 @@ const VAR_LABELS_KEYS = {
   cloud_cover: "var_cloud",
   wind_speed_10m: "var_wind",
   wind_gusts_10m: "var_gust",
+  wind_direction_10m: "var_wind",
+  uv_index: "var_uv",
   pressure_msl: "var_press",
   visibility: "var_vis",
 };
@@ -31,6 +33,8 @@ const VAR_ORDER = [
   "cloud_cover",
   "wind_speed_10m",
   "wind_gusts_10m",
+  "wind_direction_10m",
+  "uv_index",
   "pressure_msl",
   "visibility",
 ];
@@ -566,6 +570,9 @@ function render(data, hours = state.hours) {
   /* Timeline */
   window.__partialData = !!currentData?.partial;
   renderTimeline(times, byTime);
+  renderSunCard(byTime, data.sun);
+  renderUvCard(byTime);
+  renderAirCard(byTime);
 
   /* Hourly cards */
   renderHours(times, byTime);
@@ -581,6 +588,83 @@ function render(data, hours = state.hours) {
 
   /* Table */
   renderTable(times, byTime);
+}
+
+function fmtSunHM(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+function minutesBetween(a, b) {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.round((new Date(b) - new Date(a)) / 60000));
+}
+function renderSunCard(byTime, sun) {
+  const elSun = document.getElementById("sun-card");
+  if (!elSun) return;
+  const daily = sun?.daily;
+  let sunrise = daily?.sunrise?.[0];
+  let sunset = daily?.sunset?.[0];
+  // fallback: compute from sunData global if payload shape differs
+  if (!sunrise && sunData?.daily) { sunrise = sunData.daily.sunrise?.[0]; sunset = sunData.daily.sunset?.[0]; }
+  const mins = minutesBetween(sunrise, sunset);
+  const h = Math.floor(mins / 60), m = mins % 60;
+  const dur = mins ? `${h}h${String(m).padStart(2, "0")}` : "—";
+  const now = Date.now();
+  const sr = sunrise ? new Date(sunrise).getTime() : null;
+  const ss = sunset ? new Date(sunset).getTime() : null;
+  let pct = 0;
+  if (sr && ss && now >= sr && now <= ss) pct = ((now - sr) / (ss - sr)) * 100;
+  else if (ss && now > ss) pct = 100;
+  pct = Math.max(0, Math.min(100, pct));
+  const arc = `M 10 80 A 70 70 0 0 1 150 80`;
+  const dotX = 10 + (140 * pct) / 100;
+  // rough Y on arc: y = 80 - 70*sin(pi*pct/100)
+  const dotY = 80 - 70 * Math.sin((Math.PI * pct) / 100);
+  elSun.innerHTML = `
+    <div class="sunuv__head"><span class="sunuv__title">${tr("sun_title")}</span><span class="sunuv__dur">${dur} ${tr("sun_daylight")}</span></div>
+    <svg viewBox="0 0 160 90" class="sunarc" role="img" aria-label="soleil"><path d="${arc}" fill="none" stroke="var(--line-strong)" stroke-width="3" stroke-linecap="round"/><circle cx="${dotX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="6" fill="#f59e0b" stroke="#fff" stroke-width="2"/></svg>
+    <div class="sunuv__row"><span>🌅 ${fmtSunHM(sunrise)}</span><span>🌇 ${fmtSunHM(sunset)}</span></div>`;
+}
+function renderUvCard(byTime) {
+  const elUv = document.getElementById("uv-card");
+  if (!elUv) return;
+  const vals = Object.values(byTime).map(r => r.uv_index?.value).filter(v => v != null);
+  const cur = vals[0] ?? byTime[Object.keys(byTime)[0]]?.uv_index?.value ?? 0;
+  const mx = Math.max(...vals, 0);
+  const level = cur <= 2 ? tr("uv_low") : cur <= 5 ? tr("uv_mod") : cur <= 7 ? tr("uv_high") : cur <= 10 ? tr("uv_vhigh") : tr("uv_extreme");
+  const color = cur <= 2 ? "#22c55e" : cur <= 5 ? "#eab308" : cur <= 7 ? "#f97316" : cur <= 10 ? "#ef4444" : "#a855f7";
+  const pct = Math.max(0, Math.min(100, (cur / 11) * 100));
+  const spark = Object.keys(byTime).sort().slice(0, 24).map(k => byTime[k].uv_index?.value ?? 0);
+  const spMax = Math.max(...spark, 1);
+  const pts = spark.map((v, i) => `${(i / Math.max(1, spark.length - 1)) * 100},${100 - (v / spMax) * 70}`).join(" ");
+  elUv.innerHTML = `
+    <div class="sunuv__head"><span class="sunuv__title">${tr("uv_title")}</span><span class="sunuv__badge" style="background:${color}">${cur?.toFixed(1) ?? "—"} · ${level}</span></div>
+    <div class="sunuv__gauge"><div class="sunuv__track"><div class="sunuv__fill" style="width:${pct}%;background:${color}"></div></div><div class="sunuv__ticks"><span>0</span><span>3</span><span>6</span><span>8</span><span>11+</span></div></div>
+    <svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="${color}" stroke-width="2" points="${pts}"/></svg>
+    <div class="sunuv__hint">${tr("uv_hint")}</div>`;
+}
+function renderAirCard(byTime) {
+  const elAir = document.getElementById("air-card");
+  if (!elAir) return;
+  const times = Object.keys(byTime).sort();
+  const hum = times.map(k => byTime[k].relative_humidity_2m?.value).filter(v => v != null);
+  const pres = times.map(k => byTime[k].pressure_msl?.value).filter(v => v != null);
+  const curH = hum[0] ?? 0, curP = pres[0] ?? 0;
+  const avgH = hum.length ? (hum.reduce((a, b) => a + b, 0) / hum.length).toFixed(0) : "—";
+  const sparkH = hum.slice(0, 24);
+  const sparkP = pres.slice(0, 24);
+  const mkPath = (arr, h, pad) => {
+    if (!arr.length) return "";
+    const mn = Math.min(...arr), mx = Math.max(...arr), span = Math.max(1, mx - mn);
+    return arr.map((v, i) => `${(i / Math.max(1, arr.length - 1)) * 100},${h - pad - ((v - mn) / span) * (h - pad * 2)}`).join(" ");
+  };
+  elAir.innerHTML = `
+    <div class="sunuv__head"><span class="sunuv__title">${tr("air_title")}</span><span class="sunuv__muted">${avgH}% · ${curP ? Math.round(curP) : "—"} hPa</span></div>
+    <div class="air__grid">
+      <div class="air__box"><div class="air__label">💧 ${tr("var_hum")} · ${curH ? Math.round(curH) + "%" : "—"}</div><svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="#3b82f6" stroke-width="2" points="${mkPath(sparkH, 30, 6)}"/></svg></div>
+      <div class="air__box"><div class="air__label">🔵 ${tr("var_press")} · ${curP ? Math.round(curP) : "—"} hPa</div><svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="#10b981" stroke-width="2" points="${mkPath(sparkP, 30, 6)}"/></svg></div>
+    </div>`;
 }
 
 /* Local station badge: a number, the words live in the tooltip. */
@@ -1203,20 +1287,46 @@ function applyMapLayer() {
   el("radar-slider").parentElement.hidden = !isRadar;
   el("radar-status").textContent = "";
   if (isRadar) {
+    const lg2 = document.getElementById("map-legend");
+    if (lg2) lg2.hidden = true;
     if (radarFrames.length) showRadarFrame(radarFrames.length - 1);
     return;
   }
   if (mapLayer === "streets") {
     el("radar-status").textContent = "plan (rues)";
+    const lg = document.getElementById("map-legend");
+    if (lg) lg.hidden = true;
     return;
   }
-  const label = mapLayer === "temp" ? "température (modèle)" : "précipitation (modèle)";
+  const layerLabels = {
+    temp: "température (modèle)",
+    precip: "précipitation (modèle)",
+    uv: "indice UV (modèle)",
+    humidity: "humidité (modèle)",
+    cloud: "nébulosité (modèle)",
+    pressure: "pression (modèle)",
+  };
+  const label = layerLabels[mapLayer] || mapLayer;
   el("radar-status").textContent = label;
   modelLayer = L.tileLayer(`/tile/${mapLayer}/{z}/{x}/{y}.png`, {
     opacity: 0.85,
     maxNativeZoom: 9, // model grid ~11 km: beyond z9 the backend upscales
     maxZoom: 18,
   }).addTo(map);
+  // légende détaillée par paramètre
+  const lg = document.getElementById("map-legend");
+  if (lg) {
+    const legends = {
+      temp: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,#4455aa,#f0c040,#d32f2f)"></span> -10°C → 40°C',
+      precip: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,rgba(255,255,255,0),#1e40a0)"></span> 0 → 20 mm',
+      uv: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,#3cb04a,#eab308,#ef4444,#a855f7)"></span> 0 → 11+',
+      humidity: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,#fff,#1e40a0)"></span> 0% → 100%',
+      cloud: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,#fff,#404040)"></span> 0% → 100%',
+      pressure: '<span class="map-legend__swatch" style="background:linear-gradient(90deg,#7b6fbf,#4fc28a,#e0c35a)"></span> 980 → 1030 hPa',
+    };
+    lg.innerHTML = legends[mapLayer] || "";
+    lg.hidden = !legends[mapLayer];
+  }
 }
 
 $("#map-layer").addEventListener("change", (e) => {

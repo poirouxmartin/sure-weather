@@ -134,9 +134,9 @@ def tile(
     `h` shifts the precipitation layer into the future (1..23 h from now):
     the model-side "forecast frames" that extend the observed radar timeline.
     """
-    if layer not in ("temp", "precip"):
+    if layer not in ("temp", "precip", "uv", "humidity", "cloud", "pressure"):
         raise HTTPException(status_code=404, detail=f"unknown layer {layer!r}")
-    if layer == "temp" and h:
+    if layer in ("temp", "uv", "humidity", "cloud", "pressure") and h:
         raise HTTPException(status_code=422, detail="h applies to precip only")
     if not (3 <= z <= 12):
         raise HTTPException(status_code=404, detail="zoom out of range")

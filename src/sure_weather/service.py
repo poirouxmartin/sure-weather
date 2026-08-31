@@ -589,6 +589,12 @@ class WeatherService:
 
         # Model forecasts for the cells around the point.
         samples = self.storage.latest_forecasts(cells, variables)
+        # If a newly added variable (e.g. uv_index) is missing, refresh in
+        # background so the next request carries it — keeps the map detailed
+        # per neighbourhood immediately.
+        present = {s.variable for s in samples}
+        if any(v not in present for v in variables):
+            self._schedule_refresh(center)
         # Live station observations near the point join the consensus for the
         # current hours: the "now" forecast leans on real local measurements.
         samples.extend(

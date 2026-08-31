@@ -328,6 +328,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 /* ---- Segmented range ---- */
 .seg {
   display: inline-flex;
+  flex-wrap: wrap;
   background: rgba(255,255,255,.75);
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -335,6 +336,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   gap: 2px;
   margin-bottom: 14px;
   box-shadow: var(--shadow-sm);
+  max-width: 100%;
 }
 .seg--inline { margin-bottom: 0; }
 .seg__btn {
@@ -515,6 +517,52 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   #map { height: 300px; }
 }
 
+/* ---- Sun + UV + Air grid ---- */
+.sun-uv-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.sun-card, .uv-card, .air-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.sunuv__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sunuv__title { font-size: 14px; font-weight: 700; color: var(--ink); }
+.sunuv__dur, .sunuv__muted { font-size: 12px; color: var(--ink-faint); }
+.sunuv__badge { font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 999px; color: #fff; white-space: nowrap; }
+.sunuv__row { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-soft); }
+.sunarc { width: 100%; height: 90px; }
+.spark { width: 100%; height: 30px; display: block; }
+.sunuv__gauge { margin-top: 4px; }
+.sunuv__track { height: 8px; border-radius: 999px; background: var(--mg-night); overflow: hidden; }
+.sunuv__fill { height: 100%; border-radius: 999px; transition: width 0.6s ease; }
+.sunuv__ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+.sunuv__hint { font-size: 11px; color: var(--ink-faint); margin-top: 6px; }
+.air__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.air__box { display: flex; flex-direction: column; gap: 4px; }
+.air__label { font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+
+/* Map legend for tile layers */
+.map-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.map-legend__swatch { width: 14px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid var(--line); }
+
 /* ---- Responsive ---- */
 @media (max-width: 720px) {
   .app { padding-left: calc(10px + env(safe-area-inset-left)); padding-right: calc(10px + env(safe-area-inset-right)); }
@@ -537,6 +585,8 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   }
   .table th, .table td { padding: 6px 7px; font-size: 11.5px; }
   .vars { grid-template-columns: 1fr; }
+  .sun-uv-grid { grid-template-columns: 1fr; }
+  .air__grid { grid-template-columns: 1fr; }
 }
 
 /* ---- Collapsible hourly detail ---- */

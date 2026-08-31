@@ -88,6 +88,46 @@ _PRECIP_STOPS = [
 _PRECIP_LUT = _build_lut(_PRECIP_STOPS)
 _PRECIP_VMIN, _PRECIP_VMAX = 0.0, 20.0
 
+_UV_STOPS = [
+    (0.0, (60, 180, 75, 140)),
+    (2.0, (120, 200, 80, 165)),
+    (4.0, (255, 220, 60, 180)),
+    (6.0, (255, 150, 30, 200)),
+    (8.0, (220, 50, 50, 220)),
+    (11.0, (140, 40, 180, 230)),
+]
+_UV_LUT = _build_lut(_UV_STOPS)
+_UV_VMIN, _UV_VMAX = 0.0, 11.0
+
+_HUMIDITY_STOPS = [
+    (0.0, (255, 255, 255, 0)),
+    (30.0, (200, 220, 255, 110)),
+    (60.0, (100, 160, 255, 175)),
+    (85.0, (30, 90, 200, 210)),
+    (100.0, (10, 40, 120, 225)),
+]
+_HUMIDITY_LUT = _build_lut(_HUMIDITY_STOPS)
+_HUMIDITY_VMIN, _HUMIDITY_VMAX = 0.0, 100.0
+
+_CLOUD_STOPS = [
+    (0.0, (255, 255, 255, 0)),
+    (20.0, (220, 220, 220, 90)),
+    (50.0, (160, 160, 160, 150)),
+    (80.0, (90, 90, 90, 190)),
+    (100.0, (40, 40, 40, 215)),
+]
+_CLOUD_LUT = _build_lut(_CLOUD_STOPS)
+_CLOUD_VMIN, _CLOUD_VMAX = 0.0, 100.0
+
+_PRESSURE_STOPS = [
+    (980.0, (120, 80, 180, 170)),
+    (1000.0, (100, 150, 220, 175)),
+    (1015.0, (120, 200, 120, 165)),
+    (1030.0, (220, 180, 80, 185)),
+]
+_PRESSURE_LUT = _build_lut(_PRESSURE_STOPS)
+_PRESSURE_VMIN, _PRESSURE_VMAX = 980.0, 1030.0
+
 
 def _apply_lut(vals: np.ndarray, lut: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     """Map a (H, W) float array to an (H, W, 4) RGBA overlay."""
@@ -106,6 +146,22 @@ def temperature_overlay(vals: np.ndarray) -> np.ndarray:
 
 def precipitation_overlay(vals: np.ndarray) -> np.ndarray:
     return _apply_lut(vals, _PRECIP_LUT, _PRECIP_VMIN, _PRECIP_VMAX)
+
+
+def uv_overlay(vals: np.ndarray) -> np.ndarray:
+    return _apply_lut(vals, _UV_LUT, _UV_VMIN, _UV_VMAX)
+
+
+def humidity_overlay(vals: np.ndarray) -> np.ndarray:
+    return _apply_lut(vals, _HUMIDITY_LUT, _HUMIDITY_VMIN, _HUMIDITY_VMAX)
+
+
+def cloud_overlay(vals: np.ndarray) -> np.ndarray:
+    return _apply_lut(vals, _CLOUD_LUT, _CLOUD_VMIN, _CLOUD_VMAX)
+
+
+def pressure_overlay(vals: np.ndarray) -> np.ndarray:
+    return _apply_lut(vals, _PRESSURE_LUT, _PRESSURE_VMIN, _PRESSURE_VMAX)
 
 
 # ---- Open-Meteo sampling + cache ----
@@ -140,7 +196,7 @@ def _cache_put(key: tuple[str, int, int, int], data: bytes) -> None:
         _tile_cache[key] = (time.time(), data)
 
 
-_CURRENT_VARS = "temperature_2m,precipitation"
+_CURRENT_VARS = "temperature_2m,precipitation,uv_index,relative_humidity_2m,cloud_cover,pressure_msl"
 
 
 def wind_grid(
@@ -197,6 +253,11 @@ def wind_grid(
     return points
 
 
+def _samples_for_zoom(z: int) -> int:
+    """Finer sampling at city zoom (street-level detail per neighbourhood)."""
+    return 16 if z >= 12 else 8
+
+
 def _build_request_params(
     z: int, x: int, y: int, *, hour_offset: int = 0
 ) -> tuple[list[tuple[str, str]], str]:
@@ -205,10 +266,12 @@ def _build_request_params(
     hour_offset=0 uses the live `current` block; offsets 1..23 request the
     hourly precipitation array instead — that is how the map shows where the
     model moves the rain AFTER the radar's last observed frame.
+    The grid density adapts: 16×16 at city zoom (≥12) for neighbourhood detail.
     """
+    n = _samples_for_zoom(z)
     lon_w, lat_s, lon_e, lat_n = tile_bounds(z, x, y)
-    lats = np.linspace(lat_n, lat_s, _SAMPLES)
-    lons = np.linspace(lon_w, lon_e, _SAMPLES)
+    lats = np.linspace(lat_n, lat_s, n)
+    lons = np.linspace(lon_w, lon_e, n)
     params: list[tuple[str, str]] = []
     for la in lats:
         for lo in lons:
@@ -223,11 +286,12 @@ def _build_request_params(
     return params, "now"
 
 
-def _sample_to_grid(layer: str, samples: list[dict], hour_offset: int = 0) -> np.ndarray:
+def _sample_to_grid(layer: str, samples: list[dict], hour_offset: int = 0, z: int = 8) -> np.ndarray:
     """Map the flat list of per-location responses back to a value grid."""
+    n = _samples_for_zoom(z)
     if hour_offset:
         target = int(time.time()) // 3600 * 3600 + hour_offset * 3600
-        grid = np.full((_SAMPLES, _SAMPLES), np.nan)
+        grid = np.full((n, n), np.nan)
         for i, s in enumerate(samples):
             times = (s.get("hourly") or {}).get("time") or []
             vals = (s.get("hourly") or {}).get("precipitation") or []
@@ -239,15 +303,23 @@ def _sample_to_grid(layer: str, samples: list[dict], hour_offset: int = 0) -> np
                 if best is None or d < best[0]:
                     best = (d, v)
             if best is not None:
-                grid[i // _SAMPLES, i % _SAMPLES] = float(best[1])
+                grid[i // n, i % n] = float(best[1])
         return grid
-    key = "temperature_2m" if layer == "temp" else "precipitation"
-    grid = np.full((_SAMPLES, _SAMPLES), np.nan, dtype=np.float64)
+    key_map = {
+        "temp": "temperature_2m",
+        "precip": "precipitation",
+        "uv": "uv_index",
+        "humidity": "relative_humidity_2m",
+        "cloud": "cloud_cover",
+        "pressure": "pressure_msl",
+    }
+    key = key_map.get(layer, "temperature_2m")
+    grid = np.full((n, n), np.nan, dtype=np.float64)
     for i, s in enumerate(samples):
         cur = s.get("current") or {}
         val = cur.get(key)
         if val is not None:
-            grid[i // _SAMPLES, i % _SAMPLES] = float(val)
+            grid[i // n, i % n] = float(val)
     return grid
 
 
@@ -266,7 +338,7 @@ def render_tile(
     `hour_offset` > 0 renders the model's precipitation that many hours from
     now: the "future frames" that extend the observed radar timeline.
     """
-    if layer not in ("temp", "precip"):
+    if layer not in ("temp", "precip", "uv", "humidity", "cloud", "pressure"):
         return None
     key = (layer, z, x, y, hour_offset)
     cached = _cache_get(key)
@@ -287,13 +359,23 @@ def render_tile(
     samples = r.json()
     if not isinstance(samples, list):
         return None
-    grid = _sample_to_grid(layer, samples, hour_offset=hour_offset)
-    overlay = (
-        temperature_overlay(grid)
-        if layer == "temp"
-        else precipitation_overlay(grid)
-    )
-    upscale = _TILE_SIZE // _SAMPLES
+    grid = _sample_to_grid(layer, samples, hour_offset=hour_offset, z=z)
+    if layer == "temp":
+        overlay = temperature_overlay(grid)
+    elif layer == "precip":
+        overlay = precipitation_overlay(grid)
+    elif layer == "uv":
+        overlay = uv_overlay(grid)
+    elif layer == "humidity":
+        overlay = humidity_overlay(grid)
+    elif layer == "cloud":
+        overlay = cloud_overlay(grid)
+    elif layer == "pressure":
+        overlay = pressure_overlay(grid)
+    else:
+        overlay = temperature_overlay(grid)
+    n = _samples_for_zoom(z)
+    upscale = _TILE_SIZE // n
     pixels = np.repeat(np.repeat(overlay, upscale, axis=0), upscale, axis=1)
     data = encode_png_rgba(pixels)
     _cache_put(key, data)

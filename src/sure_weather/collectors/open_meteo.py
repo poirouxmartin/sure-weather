@@ -17,6 +17,7 @@ _FORECAST_VARS = [
     Variable.WIND_SPEED_10M,
     Variable.WIND_GUSTS_10M,
     Variable.WIND_DIRECTION_10M,
+    Variable.UV_INDEX,
     Variable.RELATIVE_HUMIDITY_2M,
     Variable.PRESSURE_MSL,
     Variable.DEW_POINT_2M,

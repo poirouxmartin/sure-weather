@@ -12,6 +12,7 @@ class Variable:
     WIND_SPEED_10M = "wind_speed_10m"
     WIND_GUSTS_10M = "wind_gusts_10m"
     WIND_DIRECTION_10M = "wind_direction_10m"
+    UV_INDEX = "uv_index"
     RELATIVE_HUMIDITY_2M = "relative_humidity_2m"
     PRESSURE_MSL = "pressure_msl"
     DEW_POINT_2M = "dew_point_2m"
@@ -29,6 +30,7 @@ ALL_VARIABLES = (
     Variable.WIND_SPEED_10M,
     Variable.WIND_GUSTS_10M,
     Variable.WIND_DIRECTION_10M,
+    Variable.UV_INDEX,
     Variable.RELATIVE_HUMIDITY_2M,
     Variable.PRESSURE_MSL,
     Variable.DEW_POINT_2M,

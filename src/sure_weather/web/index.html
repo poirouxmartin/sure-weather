@@ -93,12 +93,22 @@
         <div class="card__head">
           <h2 class="card__title" data-i18n="mg_title">Prochaines heures</h2>
           <div class="seg seg--inline" id="range-seg">
+            <button class="seg__btn" data-hours="1">1 h</button>
+            <button class="seg__btn" data-hours="3">3 h</button>
+            <button class="seg__btn" data-hours="8">8 h</button>
             <button class="seg__btn seg__btn--active" data-hours="24">24 h</button>
             <button class="seg__btn" data-hours="72">72 h</button>
             <button class="seg__btn" data-hours="168">7 j</button>
           </div>
         </div>
         <div class="timeline__chart" id="timeline-chart"></div>
+      </section>
+
+      <!-- Soleil, UV, air — schémas parlants en 1 coup d'oeil -->
+      <section class="sun-uv-grid" id="sun-uv-grid">
+        <div class="card sun-card" id="sun-card"></div>
+        <div class="card uv-card" id="uv-card"></div>
+        <div class="card air-card" id="air-card"></div>
       </section>
 
       <!-- Hourly detail cards: collapsible, the meteogram is the primary view -->
@@ -130,6 +140,10 @@
               <option value="radar" data-i18n="layer_radar">Radar pluie (live)</option>
               <option value="precip" data-i18n="layer_precip">Précipitation (modèle)</option>
               <option value="temp" data-i18n="layer_temp">Température</option>
+              <option value="uv" data-i18n="layer_uv">UV</option>
+              <option value="humidity" data-i18n="layer_humidity">Humidité</option>
+              <option value="cloud" data-i18n="layer_cloud">Nébulosité</option>
+              <option value="pressure" data-i18n="layer_pressure">Pression</option>
               <option value="streets" data-i18n="layer_streets">Rue</option>
             </select>
           </label>
@@ -137,6 +151,7 @@
             <input type="checkbox" id="wind-toggle" checked /> 💨
           </label>
         </div>
+        <div class="map-legend" id="map-legend" hidden></div>
       </section>
 
       <!-- Confidence -->
