@@ -325,6 +325,30 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .sure--bad { background: rgba(220,38,38,.11); color: var(--red); }
 .station-badge { background: rgba(14,143,163,.1); color: #0e8fa3; }
 
+/* ---- Graph tabs (same row as the meteogram) ---- */
+.graph-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+.graph-tab {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.graph-tab--active {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+
 /* ---- Segmented range ---- */
 .seg {
   display: inline-flex;
@@ -396,6 +420,7 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
 .mg-temp { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mg-icon { font-size: 15px; }
 .mg-now { font-size: 9.5px; font-weight: 700; fill: var(--accent); }
+.mg-axis { font-size: 10px; font-weight: 600; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
 
 /* ---- Timeline chart (legacy bars, kept for fallback) ---- */
 

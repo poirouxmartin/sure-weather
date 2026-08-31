@@ -3,7 +3,7 @@
    - /weather: network-first, cached fallback for offline.
    - /tile + /wind-grid: cache-first runtime cache (offline map, upstream
      hiccups), trimmed to a bounded number of entries. */
-const CACHE = "sure-weather-v8";
+const CACHE = "sure-weather-v9";
 const RUNTIME = "sure-weather-tiles-v1";
 const RUNTIME_MAX = 600;
 const APP_SHELL = ["/", "/static/app.css", "/static/app.js", "/static/i18n.js", "/static/icon.svg"];

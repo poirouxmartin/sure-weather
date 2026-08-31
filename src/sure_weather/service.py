@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import math
@@ -636,6 +636,42 @@ class WeatherService:
                     "contributors": [p for p, _, _ in r.contributors],
                 }
             )
+        # Detailed breakdown for the nearest hour (transparency): raw values per
+        # provider, bias, weight, and the weighted calibrated mean (= consensus).
+        breakdown = []
+        breakdown_valid_at = None
+        if results:
+            var0 = "temperature_2m"
+            # pick the earliest hour that actually has temperature_2m data
+            by_time_var = {r.valid_at: r for r in results if r.variable == var0}
+            for vat in sorted(by_time_var):
+                cands = [s for s in samples if s.variable == var0 and s.valid_at == vat]
+                if not cands:
+                    continue
+                breakdown_valid_at = vat
+                from collections import defaultdict as _dd
+                by_prov: dict[str, list] = _dd(list)
+                for s in cands:
+                    by_prov[s.provider].append(s.value)
+                bucket = horizon_bucket(vat, cands[0].issued_at)
+                for prov, vals in by_prov.items():
+                    raw = sum(vals) / len(vals)
+                    stat = stats.get((prov, center.key, var0, bucket))
+                    bias = stat.bias if stat and stat.samples >= 3 else 0.0
+                    w = 2.0 if kinds.get(prov) == "station" else 1.0
+                    if stat and stat.rmse > 0:
+                        w = 1.0 / (stat.rmse * stat.rmse + 0.5)
+                        if kinds.get(prov) == "station":
+                            w *= 2.0
+                    breakdown.append({"provider": prov, "raw": round(raw, 2), "bias": round(bias, 2), "corr": round(raw - bias, 2), "weight": round(w, 3)})
+                breakdown.sort(key=lambda x: x["weight"], reverse=True)
+                tot = sum(x["weight"] for x in breakdown) or 1
+                for x in breakdown:
+                    x["share"] = round(x["weight"] / tot * 100, 1)
+                break
+            if breakdown_valid_at is None and results:
+                breakdown_valid_at = min(results, key=lambda r: r.valid_at).valid_at
+
         payload = {
             "location": {"lat": lat, "lon": lon},
             "cell": center.key,
@@ -643,6 +679,8 @@ class WeatherService:
             "forecast": out,
             "summary": _summarize(out, hours),
             "partial": (not sufficient) or (not out),
+            "breakdown": breakdown,
+            "breakdown_valid_at": breakdown_valid_at.isoformat() if breakdown_valid_at else None,
         }
         # Real solar times for the night bands / day-night icons: cached for
         # the process lifetime (they shift by minutes between model runs).

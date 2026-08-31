@@ -103,6 +103,14 @@
             <button class="seg__btn" data-hours="168">7 j</button>
           </div>
         </div>
+        <div class="graph-tabs" id="graph-tabs">
+          <button class="graph-tab graph-tab--active" data-graph="temperature_2m">Temp</button>
+          <button class="graph-tab" data-graph="precipitation">Pluie</button>
+          <button class="graph-tab" data-graph="wind_speed_10m">Vent</button>
+          <button class="graph-tab" data-graph="pressure_msl">Pression</button>
+          <button class="graph-tab" data-graph="relative_humidity_2m">Humidité</button>
+          <button class="graph-tab" data-graph="uv_index">UV</button>
+        </div>
         <div class="timeline__chart" id="timeline-chart"></div>
       </section>
 
@@ -164,6 +172,21 @@
         </div>
         <p class="card__hint" data-i18n="conf_hint">Probabilité calibrée.</p>
         <div class="vars" id="vars"></div>
+      </section>
+
+      <!-- Sources détaillées : comment est calculée la température -->
+      <section class="card" id="sources-card">
+        <div class="card__head">
+          <h2 class="card__title">Détail des sources & calcul</h2>
+          <span class="card__badge" id="sources-badge"></span>
+        </div>
+        <p class="card__hint">Températures brutes par source à l'échéance la plus proche, biais corrigé, et moyenne pondérée calibrée (= notre prévision).</p>
+        <div class="tablewrap">
+          <table class="table" id="sources-table">
+            <thead><tr><th>Source</th><th>Brut</th><th>Biais</th><th>Corrigé</th><th>Poids</th><th>Part</th></tr></thead>
+            <tbody id="sources-body"></tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Hourly table -->

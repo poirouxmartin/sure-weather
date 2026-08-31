@@ -39,13 +39,15 @@ const VAR_ORDER = [
   "visibility",
 ];
 
-let state = { lat: 48.8566, lon: 2.3522, hours: 24, name: "Paris" };
+let state = { lat: 48.8566, lon: 2.3522, hours: 24, name: "Paris", graph: "temperature_2m" };
 let reqToken = 0;
 
 /* ---- Deep links ----
    ?lat=&lon=&name= pre-selects a place (shared links, home-screen
    shortcuts, widgets); ?geo=1 asks for geolocation on boot. The URL is
    kept in sync so "copy link" always reproduces the current view. */
+const LAST_KEY = "sure-weather-last";
+
 (function initStateFromUrl() {
   const p = new URLSearchParams(location.search);
   const la = parseFloat(p.get("lat"));
@@ -54,12 +56,40 @@ let reqToken = 0;
     state.lat = la;
     state.lon = lo;
     state.name = p.get("name") || `${la.toFixed(4)}, ${lo.toFixed(4)}`;
+    try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
+    return;
+  }
+  // No URL coords: restore last viewed place, otherwise keep Paris as fallback.
+  try {
+    const raw = localStorage.getItem(LAST_KEY);
+    if (raw) {
+      const last = JSON.parse(raw);
+      if (Number.isFinite(last.lat) && Number.isFinite(last.lon)) {
+        state.lat = last.lat; state.lon = last.lon; state.name = last.name || state.name;
+        return;
+      }
+    }
+  } catch {}
+  // First visit with no history: try geolocation quietly (non-blocking).
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      // Only auto-apply if the user never picked a place this session (still at default Paris and no URL).
+      if (state.name === "Paris" && !location.search) {
+        state.lat = pos.coords.latitude; state.lon = pos.coords.longitude; state.name = "Ma position";
+        try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
+        syncUrl(); loadForecast();
+      }
+    }, () => {}, { timeout: 8000, maximumAge: 600000 });
   }
 })();
 
+function saveLast() {
+  try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
+}
 function syncUrl() {
   const q = `?lat=${state.lat}&lon=${state.lon}&name=${encodeURIComponent(state.name)}`;
   history.replaceState(null, "", q);
+  saveLast();
 }
 
 /* ---- Favorites (localStorage) ---- */
@@ -712,6 +742,7 @@ function render(data, hours = state.hours) {
 
   /* Table */
   renderTable(times, byTime);
+  renderSources(data);
 }
 
 function fmtSunHM(iso) {
@@ -928,51 +959,105 @@ function catmullRomPath(pts) {
   return d;
 }
 
-function renderTimeline(times, byTime) {
-  lastMeteo = { times, byTime };
+function renderTimeline(times, byTime, graph = state.graph) {
+  lastMeteo = { times, byTime, graph };
   const chart = el("timeline-chart");
   renderVerdict(times, byTime);
 
   const W = Math.max(chart.clientWidth || 600, 280);
   const H = 240;
-  const padL = 8, padR = 8, padT = 52, padB = 26;
-  const rainH = 62; // bottom zone for rain bars
+  const padL = 38, padR = 10, padT = 52, padB = 26;
+  const rainH = graph === "precipitation" ? 0 : 42; // rain has its own curve, no bar zone
   const n = times.length;
   const colW = (W - padL - padR) / Math.max(n, 1);
   const innerW = W - padL - padR;
   const innerH = H - padT - padB - rainH;
 
   const rows = times.map((t) => byTime[t] || {});
-  const temps = rows.map((r) => r.temperature_2m?.value).filter((v) => v !== null && v !== undefined);
-  const tMin = Math.min(...temps, 0);
-  const tMax = Math.max(...temps, 1);
-  const tSpan = Math.max(tMax - tMin, 1);
+  // Select variable for this tab
+  const varMap = {
+    temperature_2m: { key: "temperature_2m", unit: "°", step: null },
+    precipitation: { key: "precipitation", unit: " mm", step: null },
+    wind_speed_10m: { key: "wind_speed_10m", unit: " km/h", mult: 3.6, step: null },
+    pressure_msl: { key: "pressure_msl", unit: " hPa", step: null },
+    relative_humidity_2m: { key: "relative_humidity_2m", unit: "%", step: null },
+    uv_index: { key: "uv_index", unit: "", step: null },
+  };
+  const cfg = varMap[graph] || varMap.temperature_2m;
+  const vals = rows.map((r) => {
+    const v = r[cfg.key]?.value;
+    return v != null ? (cfg.mult ? v * cfg.mult : v) : null;
+  }).filter((v) => v !== null);
+  let vMin, vMax, vSpan;
+  if (!vals.length) { vMin = 0; vMax = 1; vSpan = 1; }
+  else if (vals.length === 1) { vMin = vals[0] - 1; vMax = vals[0] + 1; vSpan = 2; }
+  else {
+    const rawMin = Math.min(...vals), rawMax = Math.max(...vals);
+    const rawSpan = rawMax - rawMin;
+    let pad = Math.max(rawSpan * 0.18, 1.0);
+    if (graph === "precipitation") pad = Math.max(rawSpan * 0.3, 1.0);
+    if (graph === "uv_index") pad = 1.0;
+    vMin = rawMin - pad / 2;
+    vMax = rawMax + pad / 2;
+    vSpan = vMax - vMin;
+    // Clamp to physical bounds where applicable
+    if (graph === "precipitation" || graph === "uv_index" || graph === "relative_humidity_2m") vMin = Math.max(0, vMin);
+    if (graph === "relative_humidity_2m") vMax = Math.min(100, vMax);
+    if (graph === "uv_index") { vMin = 0; vMax = Math.max(5, vMax); }
+    vSpan = vMax - vMin;
+    if (vSpan < 1.2) { const mid = (vMin + vMax) / 2; vMin = mid - 0.6; vMax = mid + 0.6; vSpan = 1.2; }
+    if (graph === "precipitation" && vMax < 2) { vMax = 2; vSpan = vMax - vMin; }
+  }
+  // For legacy temp-specific code below, alias
+  const tMin = vMin, tMax = vMax, tSpan = vSpan;
+  const temps = vals;
   const xAt = (i) => padL + colW * (i + 0.5);
   const yTemp = (v) => padT + (1 - (v - tMin) / tSpan) * innerH;
   const yBase = H - padB;
 
+  const yFor = (v) => padT + (1 - (v - vMin) / vSpan) * innerH;
   const parts = [];
-  // Night bands + hour labels + rain bars + temp points.
+  // Y grid + labels (adaptive, per variable)
+  {
+    let step, fmt;
+    if (graph === "precipitation") { step = vSpan <= 2 ? 0.5 : vSpan <= 6 ? 1 : 2; fmt = (x) => `${x % 1 === 0 ? x.toFixed(0) : x.toFixed(1)} mm`; }
+    else if (graph === "wind_speed_10m") { step = vSpan <= 6 ? 2 : vSpan <= 15 ? 5 : 10; fmt = (x) => `${Math.round(x)} km/h`; }
+    else if (graph === "pressure_msl") { step = vSpan <= 6 ? 2 : 5; fmt = (x) => `${Math.round(x)}`; }
+    else if (graph === "uv_index") { step = 2; fmt = (x) => x.toFixed(0); }
+    else if (graph === "relative_humidity_2m") { step = vSpan <= 20 ? 10 : 20; fmt = (x) => `${Math.round(x)}%`; }
+    else { step = vSpan <= 3 ? 0.5 : vSpan <= 6 ? 1 : vSpan <= 12 ? 2 : 5; fmt = (x) => `${x % 1 === 0 ? x.toFixed(0) : x.toFixed(1)}°`; }
+    const start = Math.ceil(vMin / step) * step;
+    for (let v = start; v <= vMax + 1e-9; v += step) {
+      const y = yFor(v);
+      if (y < padT - 4 || y > H - padB + 4) continue;
+      parts.push(`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1" opacity=".45"/>`);
+      parts.push(`<text x="${(padL - 6).toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" class="mg-axis">${fmt(v)}</text>`);
+    }
+  }
+  // Night bands + hour labels + rain bars + curve points.
   const labelStep = Math.max(1, Math.ceil(38 / Math.max(colW, 1)));
   const iconStep = Math.max(1, Math.ceil(34 / Math.max(colW, 1)));
   const pts = [];
   rows.forEach((row, i) => {
     const x0 = padL + i * colW;
-    const hour = new Date(times[i]).getHours();
-    if (hour < 7 || hour >= 20) {
+    if (isNight(times[i])) {
       parts.push(`<rect x="${x0}" y="${padT - 14}" width="${colW}" height="${H - padB - padT + 14}" style="fill:var(--mg-night)"/>`);
     }
-    const prob = row.precipitation_probability?.value ?? 0;
-    const mm = row.precipitation?.value ?? 0;
-    if (prob >= 5 || mm > 0.05) {
-      const bh = Math.max((Math.max(prob, Math.min(mm * 20, 100)) / 100) * rainH, 3);
-      parts.push(
-        `<rect x="${(x0 + colW * 0.18).toFixed(1)}" y="${(yBase - bh).toFixed(1)}" width="${(colW * 0.64).toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="#3b82f6" opacity="${(0.25 + Math.min(prob, 100) / 100 * 0.55).toFixed(2)}"><title>pluie ${Math.round(prob)}%</title></rect>`
-      );
+    // Rain bars only on the precipitation tab (otherwise the main curve is the rain itself)
+    if (graph !== "precipitation") {
+      const prob = row.precipitation_probability?.value ?? 0;
+      const mm = row.precipitation?.value ?? 0;
+      if (prob >= 5 || mm > 0.05) {
+        const bh = Math.max((Math.max(prob, Math.min(mm * 20, 100)) / 100) * rainH, 3);
+        parts.push(
+          `<rect x="${(x0 + colW * 0.18).toFixed(1)}" y="${(yBase - bh).toFixed(1)}" width="${(colW * 0.64).toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="#3b82f6" opacity="${(0.25 + Math.min(prob, 100) / 100 * 0.55).toFixed(2)}"><title>pluie ${Math.round(prob)}%</title></rect>`
+        );
+      }
     }
-    const v = row.temperature_2m?.value;
+    let v = row[cfg.key]?.value;
+    if (v != null && cfg.mult) v *= cfg.mult;
     if (v !== null && v !== undefined) {
-      pts.push([xAt(i), yTemp(v), v]);
+      pts.push([xAt(i), yFor(v), v]);
     }
     if (i % labelStep === 0) {
       parts.push(`<text x="${xAt(i).toFixed(1)}" y="${H - 7}" text-anchor="middle" class="mg-hour">${fmtTime(times[i])}</text>`);
@@ -983,27 +1068,42 @@ function renderTimeline(times, byTime) {
     }
   });
 
-  // Temperature curve + gradient area.
+  // Curve + gradient area (color per variable).
   if (pts.length > 1) {
+    const palette = {
+      temperature_2m: (v) => tempColor(v),
+      precipitation: () => "#3b82f6",
+      wind_speed_10m: () => "#0ea5e9",
+      pressure_msl: () => "#10b981",
+      relative_humidity_2m: () => "#6366f1",
+      uv_index: (v) => v <= 2 ? "#22c55e" : v <= 5 ? "#eab308" : v <= 7 ? "#f97316" : v <= 10 ? "#ef4444" : "#a855f7",
+    };
+    const solid = {
+      temperature_2m: "#2f6bff", precipitation: "#3b82f6", wind_speed_10m: "#0ea5e9",
+      pressure_msl: "#10b981", relative_humidity_2m: "#6366f1", uv_index: "#f59e0b",
+    };
+    const cFn = palette[graph] || palette.temperature_2m;
+    const base = solid[graph] || "#2f6bff";
+    const suf = graph === "precipitation" ? " mm" : graph === "wind_speed_10m" ? " km/h" : graph === "pressure_msl" ? " hPa" : graph === "relative_humidity_2m" ? "%" : graph === "uv_index" ? "" : "°";
     const line = catmullRomPath(pts.map((p) => [p[0], p[1]]));
     const area = line + ` L ${pts[pts.length - 1][0]},${padT} L ${pts[0][0]},${padT} Z`;
-    const stops = pts
-      .map((p, i) => `<stop offset="${((p[0] - padL) / innerW * 100).toFixed(1)}%" stop-color="${tempColor(p[2])}"/>`)
-      .join("");
-    parts.push(
-      `<defs><linearGradient id="mg-line" x1="0" y1="0" x2="1" y2="0">${stops}</linearGradient>` +
-      `<linearGradient id="mg-area" x1="0" y1="0" x2="0" y2="1">` +
-      `<stop offset="0" stop-color="#2f6bff" stop-opacity=".16"/><stop offset="1" stop-color="#2f6bff" stop-opacity="0"/></linearGradient></defs>`
-    );
-    parts.push(`<path d="${area}" fill="url(#mg-area)"/>`);
-    parts.push(`<path d="${line}" fill="none" stroke="url(#mg-line)" stroke-width="2.5" stroke-linecap="round"/>`);
-    // Temp labels (thin out to avoid collisions).
+    if (graph === "temperature_2m") {
+      const stops = pts.map((p) => `<stop offset="${((p[0] - padL) / innerW * 100).toFixed(1)}%" stop-color="${cFn(p[2])}"/>`).join("");
+      parts.push(`<defs><linearGradient id="mg-line" x1="0" y1="0" x2="1" y2="0">${stops}</linearGradient><linearGradient id="mg-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${base}" stop-opacity=".16"/><stop offset="1" stop-color="${base}" stop-opacity="0"/></linearGradient></defs>`);
+      parts.push(`<path d="${area}" fill="url(#mg-area)"/>`);
+      parts.push(`<path d="${line}" fill="none" stroke="url(#mg-line)" stroke-width="2.5" stroke-linecap="round"/>`);
+    } else {
+      parts.push(`<defs><linearGradient id="mg-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${base}" stop-opacity=".18"/><stop offset="1" stop-color="${base}" stop-opacity="0"/></linearGradient></defs>`);
+      parts.push(`<path d="${area}" fill="url(#mg-area)"/>`);
+      parts.push(`<path d="${line}" fill="none" stroke="${base}" stroke-width="2.5" stroke-linecap="round"/>`);
+    }
     const tStep = Math.max(1, Math.ceil(40 / Math.max(colW, 1)));
     pts.forEach((p, i) => {
+      const col = graph === "temperature_2m" ? cFn(p[2]) : base;
       if (i % tStep === 0) {
-        parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${tempColor(p[2])}">${round(p[2])}°</text>`);
+        parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col}">${round(p[2])}${suf}</text>`);
       }
-      parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${tempColor(p[2])}" style="stroke:var(--dot-stroke)"/>`);
+      parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${col}" style="stroke:var(--dot-stroke)"/>`);
     });
   }
 
@@ -1021,7 +1121,7 @@ window.addEventListener("resize", (() => {
   return () => {
     clearTimeout(t);
     t = setTimeout(() => {
-      if (lastMeteo && el("timeline-chart")) renderTimeline(lastMeteo.times, lastMeteo.byTime);
+      if (lastMeteo && el("timeline-chart")) renderTimeline(lastMeteo.times, lastMeteo.byTime, lastMeteo.graph || state.graph);
     }, 150);
   };
 })());
@@ -1101,6 +1201,35 @@ function renderConfidence(fc) {
   if (overall.length) {
     const m = Math.round(overall.reduce((a, b) => a + b, 0) / overall.length);
     el("conf-overall").textContent = `moyenne ${m}% (calibrée)`;
+  }
+}
+
+function renderSources(data) {
+  const tb = document.getElementById("sources-body");
+  const badge = document.getElementById("sources-badge");
+  if (!tb) return;
+  tb.innerHTML = "";
+  const bd = data.breakdown || [];
+  if (badge) badge.textContent = bd.length ? `${bd.length} sources · ${fmtTime(data.breakdown_valid_at)}` : "";
+  if (!bd.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="6" style="text-align:center;color:var(--ink-faint)">—</td>`;
+    tb.appendChild(tr);
+    return;
+  }
+  for (const r of bd) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.provider}</td><td>${r.raw}°</td><td>${r.bias > 0 ? "+" : ""}${r.bias}°</td><td>${r.corr}°</td><td>${r.weight}</td><td>${r.share}%</td>`;
+    tb.appendChild(tr);
+  }
+  // Consensus row
+  const first = data.forecast.find((i) => i.variable === "temperature_2m");
+  if (first) {
+    const tr = document.createElement("tr");
+    tr.style.fontWeight = "700";
+    tr.style.background = "var(--accent-soft)";
+    tr.innerHTML = `<td>→ Notre prévision</td><td></td><td></td><td>${first.value}°</td><td></td><td>100%</td>`;
+    tb.appendChild(tr);
   }
 }
 
@@ -1194,6 +1323,15 @@ $("#range-seg").addEventListener("click", (e) => {
   if (currentData) render(currentData, state.hours);
 });
 
+document.getElementById("graph-tabs")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".graph-tab");
+  if (!btn) return;
+  document.querySelectorAll(".graph-tab").forEach((b) => b.classList.remove("graph-tab--active"));
+  btn.classList.add("graph-tab--active");
+  state.graph = btn.dataset.graph;
+  if (lastMeteo) renderTimeline(lastMeteo.times, lastMeteo.byTime, state.graph);
+});
+
 /* ---- Map & radar ---- */
 
 let map = null;
@@ -1223,14 +1361,23 @@ function initMap() {
     maxZoom: 18,
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a>',
   }).addTo(map);
-  marker = L.circleMarker([state.lat, state.lon], {
-    radius: 8,
-    color: "#fff",
-    weight: 2,
-    fillColor: "#2b6df6",
-    fillOpacity: 0.9,
+  marker = L.marker([state.lat, state.lon], {
+    draggable: true,
+    icon: L.divIcon({
+      className: "precise-marker",
+      html: `<div style="width:14px;height:14px;border-radius:50%;background:#2b6df6;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35)"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+    }),
   }).addTo(map);
-  marker.bindPopup(`<b>${state.name}</b>`);
+  marker.bindPopup(`<b>${state.name}</b><br><small>${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}</small>`);
+  marker.on("dragend", () => {
+    const p = marker.getLatLng();
+    state.lat = +p.lat.toFixed(4); state.lon = +p.lng.toFixed(4);
+    state.name = `${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}`;
+    marker.setPopupContent(`<b>${state.name}</b><br><small>${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}</small>`);
+    loadForecast();
+  });
   map.on("click", onMapClick);
   map.on("moveend", () => {
     clearTimeout(windTimer);
@@ -1433,7 +1580,7 @@ function applyMapLayer() {
   const label = layerLabels[mapLayer] || mapLayer;
   el("radar-status").textContent = label;
   modelLayer = L.tileLayer(`/tile/${mapLayer}/{z}/{x}/{y}.png`, {
-    opacity: 0.85,
+    opacity: 0.88,
     maxNativeZoom: 9, // model grid ~11 km: beyond z9 the backend upscales
     maxZoom: 18,
   }).addTo(map);
