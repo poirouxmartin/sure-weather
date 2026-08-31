@@ -64,3 +64,21 @@ self.addEventListener("fetch", (e) => {
     fetch(e.request).catch(() => caches.match(e.request).then((hit) => hit || Promise.reject()))
   );
 });
+
+self.addEventListener("push", (e) => {
+  let data = { title: "Sure Weather", body: "Mise à jour météo" };
+  try { data = e.data.json(); } catch {}
+  e.waitUntil(
+    self.registration.showNotification(data.title || "Sure Weather", {
+      body: data.body || "",
+      icon: "/static/icon-192.png",
+      badge: "/static/icon-192.png",
+      data: { url: data.url || "/" },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(clients.openWindow(e.notification.data.url || "/"));
+});

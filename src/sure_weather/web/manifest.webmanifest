@@ -24,5 +24,17 @@
       "short_name": "Position",
       "url": "/?geo=1&source=pwa"
     }
+  ],
+  "widgets": [
+    {
+      "name": "Météo actuelle",
+      "description": "Température et conditions en 1 coup d'œil",
+      "tag": "current-weather",
+      "template": "current-weather-template",
+      "msAcTemplate": "/static/widget-template.json",
+      "data": "/now?lat=48.85&lon=2.35",
+      "type": "application/json",
+      "update": 900
+    }
   ]
 }

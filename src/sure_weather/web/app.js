@@ -157,6 +157,62 @@ function round(v, d = 1) {
   return v.toFixed(d);
 }
 
+function interpolateTo15Min(times, byTime, hours) {
+  if (!times.length) return { times, byTime };
+  // Build a dense 15-min grid covering the requested window, interpolating
+  // between the two nearest hourly points — so 1h = 5 points, 3h = 13, 8h = 33.
+  const start = new Date(times[0]).getTime();
+  const end = start + hours * 3600000;
+  const sorted = times.slice().sort();
+  const outTimes = [];
+  const outByTime = {};
+  for (let t = start; t <= end; t += 900000) {
+    const iso = new Date(t).toISOString();
+    // find bracket
+    let lo = sorted[0], hi = sorted[sorted.length - 1];
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = new Date(sorted[i]).getTime(), b = new Date(sorted[i + 1]).getTime();
+      if (t >= a && t <= b) { lo = sorted[i]; hi = sorted[i + 1]; break; }
+      if (t < a) { hi = lo; break; }
+    }
+    if (t <= new Date(lo).getTime()) {
+      outTimes.push(iso);
+      outByTime[iso] = { ...(byTime[lo] || {}), valid_at: iso, time: iso };
+      continue;
+    }
+    if (t >= new Date(hi).getTime()) {
+      outTimes.push(iso);
+      outByTime[iso] = { ...(byTime[hi] || {}), valid_at: iso, time: iso };
+      continue;
+    }
+    const t0 = new Date(lo).getTime(), t1 = new Date(hi).getTime();
+    const frac = (t - t0) / Math.max(1, t1 - t0);
+    const row0 = byTime[lo] || {}, row1 = byTime[hi] || {};
+    const row = {};
+    const vars = new Set([...Object.keys(row0), ...Object.keys(row1)]);
+    for (const v of vars) {
+      const a = row0[v], b = row1[v];
+      if (!a && !b) continue;
+      if (!a) { row[v] = { ...b, valid_at: iso }; continue; }
+      if (!b) { row[v] = { ...a, valid_at: iso }; continue; }
+      if (v === "wind_direction_10m") {
+        const av = a.value, bv = b.value;
+        let diff = ((bv - av + 540) % 360) - 180;
+        row[v] = { ...a, value: (av + diff * frac + 360) % 360, valid_at: iso };
+      } else {
+        const va = a.value ?? 0, vb = b.value ?? 0;
+        const la = a.low ?? va, ha = a.high ?? va;
+        const lb = b.low ?? vb, hb = b.high ?? vb;
+        row[v] = { ...a, value: va + (vb - va) * frac, low: la + (lb - la) * frac, high: ha + (hb - ha) * frac, valid_at: iso };
+      }
+    }
+    row.time = iso;
+    outTimes.push(iso);
+    outByTime[iso] = row;
+  }
+  return { times: outTimes, byTime: outByTime };
+}
+
 /* Day/night from REAL sunrise/sunset (Open-Meteo daily), not a fixed
    6h-21h guess that breaks by ±3h depending on season. Falls back to the
    coarse guess until the sun data lands. */
@@ -354,6 +410,68 @@ themeBtn.addEventListener("click", () => {
 });
 applyThemeButton();
 
+/* ---- PWA install prompt (Android) ---- */
+let deferredPrompt = null;
+const installBtn = document.getElementById("install-btn");
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  if (installBtn) installBtn.hidden = false;
+});
+if (installBtn) {
+  installBtn.addEventListener("click", async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    try { await deferredPrompt.userChoice; } catch {}
+    deferredPrompt = null;
+    installBtn.hidden = true;
+  });
+}
+window.addEventListener("appinstalled", () => {
+  deferredPrompt = null;
+  if (installBtn) installBtn.hidden = true;
+});
+
+/* ---- Push notifications (alertes pluie / orage) ---- */
+const notifBtn = document.getElementById("notif-btn");
+function urlB64ToUint8Array(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+async function setupPush() {
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window) || !notifBtn) return;
+  if (Notification.permission === "denied") return;
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    notifBtn.textContent = "🔔✓";
+    notifBtn.title = "Alertes activées";
+    return;
+  }
+  if (Notification.permission === "default") notifBtn.hidden = false;
+}
+if (notifBtn) {
+  notifBtn.addEventListener("click", async () => {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") return;
+      const reg = await navigator.serviceWorker.ready;
+      const { publicKey } = await fetch("/push/key").then((r) => r.json());
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(publicKey) });
+      await fetch("/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: sub.endpoint, keys: { p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("auth")))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") }, lat: state.lat, lon: state.lon }),
+      });
+      notifBtn.textContent = "🔔✓";
+      notifBtn.title = "Alertes activées";
+    } catch {}
+  });
+  setupPush();
+}
+
 /* ---- Load ---- */
 
 /* Progressive, non-blocking load: the place name renders immediately with
@@ -521,9 +639,15 @@ function render(data, hours = state.hours) {
 
   const fc = data.forecast.filter((i) => i.horizon_h <= hours + 0.5);
   const summary = clientSummary(fc);
-  const byTime = {};
+  let byTime = {};
   for (const item of fc) (byTime[item.valid_at] = byTime[item.valid_at] || {})[item.variable] = item;
-  const times = Object.keys(byTime).sort();
+  let times = Object.keys(byTime).sort();
+  // 1h/3h/8h : interpolate hourly data to 15 min for a truly detailed view
+  if (hours <= 8) {
+    const interp = interpolateTo15Min(times, byTime, hours);
+    byTime = interp.byTime;
+    times = interp.times;
+  }
 
   el("loc-name").textContent = state.name;
   // Union of contributors across the whole window: the first item alone can

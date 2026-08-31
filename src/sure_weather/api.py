@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+import base64
+import json
 from pathlib import Path
 
 import httpx
@@ -9,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .config import load_config
 from .net import get_client
@@ -21,6 +24,46 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 _config = load_config()
 _storage = Storage(_config.db_path)
 _service = WeatherService(_storage, _config)
+
+
+# ---- Push notifications (VAPID) ----
+def _b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _generate_vapid_keys() -> dict:
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    pub = priv.public_key()
+    priv_bytes = priv.private_numbers().private_value.to_bytes(32, "big")
+    pub_nums = pub.public_numbers()
+    pub_bytes = b"\x04" + pub_nums.x.to_bytes(32, "big") + pub_nums.y.to_bytes(32, "big")
+    return {"public": _b64url(pub_bytes), "private": _b64url(priv_bytes)}
+
+
+def _get_vapid_keys() -> dict:
+    f = Path(_config.db_path).parent / "vapid.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except Exception:
+            pass
+    keys = _generate_vapid_keys()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(keys))
+    except Exception:
+        pass
+    return keys
+
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict  # {p256dh, auth}
+    lat: float | None = None
+    lon: float | None = None
 
 
 @app.on_event("startup")
@@ -267,6 +310,54 @@ def wind_grid_endpoint(
     if points is None:
         raise HTTPException(status_code=502, detail="wind upstream unavailable")
     return {"points": points}
+
+
+@app.get("/push/key")
+def push_key() -> dict:
+    """VAPID public key for the frontend to subscribe with PushManager."""
+    return {"publicKey": _get_vapid_keys()["public"]}
+
+
+@app.post("/push/subscribe")
+def push_subscribe(sub: PushSubscription) -> dict:
+    if not sub.endpoint or not sub.keys.get("p256dh") or not sub.keys.get("auth"):
+        raise HTTPException(status_code=422, detail="invalid subscription")
+    _storage.add_push_subscription(sub.endpoint, sub.keys["p256dh"], sub.keys["auth"], sub.lat, sub.lon)
+    return {"ok": True}
+
+
+@app.delete("/push/subscribe")
+def push_unsubscribe(endpoint: str = Query(...)) -> dict:
+    _storage.remove_push_subscription(endpoint)
+    return {"ok": True}
+
+
+@app.post("/push/test")
+def push_test(lat: float | None = Query(None), lon: float | None = Query(None)) -> dict:
+    """Send a test push to all (or location-filtered) subscribers."""
+    subs = _storage.list_push_subscriptions()
+    if lat is not None and lon is not None:
+        # rough filter: subscribers near the requested location
+        subs = [s for s in subs if s["lat"] is not None and abs(s["lat"] - lat) < 1.5 and abs(s["lon"] - lon) < 1.5]
+    if not subs:
+        raise HTTPException(status_code=404, detail="no subscribers")
+    keys = _get_vapid_keys()
+    from pywebpush import WebPushException, webpush
+
+    sent = 0
+    for s in subs:
+        try:
+            webpush(
+                subscription_info={"endpoint": s["endpoint"], "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}},
+                data=json.dumps({"title": "Sure Weather — test", "body": "Pluie prévue dans l'heure ☔", "url": f"/?lat={lat or 48.85}&lon={lon or 2.35}"}),
+                vapid_private_key=keys["private"],
+                vapid_claims={"sub": "mailto:sure-weather@example.com"},
+            )
+            sent += 1
+        except WebPushException as exc:
+            if exc.response and exc.response.status_code in (404, 410):
+                _storage.remove_push_subscription(s["endpoint"])
+    return {"sent": sent}
 
 
 @app.get("/now")
