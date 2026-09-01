@@ -24,7 +24,7 @@
 
 # Certificats internes émis explicitement pour localhost et l'IP LAN
 # (mettre à jour l'IP si le DHCP du réseau la change).
-https://127.0.0.1:8443 https://192.168.1.10:8443 {
+https://127.0.0.1:8443 https://{$EXTERNAL_IP}:8443 {
 	tls internal
 	encode gzip
 	reverse_proxy 127.0.0.1:8000
