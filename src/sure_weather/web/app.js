@@ -1308,11 +1308,17 @@ function renderConfidence(fc) {
   const wrap = el("vars");
   wrap.innerHTML = "";
   const overall = [];
+  let anyCalibrated = false;
   for (const v of VAR_ORDER) {
-    const items = fc.filter((i) => i.variable === v && i.calibrated);
+    // Standalone (on-device fusion) never calibrates: still show the
+    // inter-model agreement bars, suffixed "non cal." instead of hiding all.
+    const items = fc.filter((i) => i.variable === v && i.confidence != null);
     if (!items.length) continue;
-    const avg = items.reduce((a, i) => a + i.confidence, 0) / items.length;
-    const sureShare = items.filter((i) => i.confidence >= 0.98).length / items.length;
+    const cal = items.filter((i) => i.calibrated);
+    const use = cal.length ? cal : items;
+    if (cal.length) anyCalibrated = true;
+    const avg = use.reduce((a, i) => a + i.confidence, 0) / use.length;
+    const sureShare = use.filter((i) => i.sure).length / use.length;
     const pct = Math.round(avg * 100);
     overall.push(pct);
     const color = confColor(avg);
@@ -1321,7 +1327,7 @@ function renderConfidence(fc) {
     div.innerHTML = `
       <div class="var__head">
         <span class="var__label">${varLabel(v)}</span>
-        <span class="var__value" style="color:${color}">${tr("conf_sure_share", { p: pct, s: Math.round(sureShare * 100) })}</span>
+        <span class="var__value" style="color:${color}">${cal.length ? tr("conf_sure_share", { p: pct, s: Math.round(sureShare * 100) }) : `${pct}% · ${tr("conf_na")}`}</span>
       </div>
       <div class="var__track">
         <div class="var__bar" style="width:${pct}%; background:${color}"></div>
@@ -1330,7 +1336,7 @@ function renderConfidence(fc) {
   }
   if (overall.length) {
     const m = Math.round(overall.reduce((a, b) => a + b, 0) / overall.length);
-    el("conf-overall").textContent = tr("conf_avg", { m });
+    el("conf-overall").textContent = tr(anyCalibrated ? "conf_avg" : "conf_avg_na", { m });
   }
 }
 
@@ -1352,14 +1358,14 @@ function renderSources(data) {
     tr.innerHTML = `<td>${escHtml(r.provider)}</td><td>${escHtml(r.raw)}°</td><td>${r.bias > 0 ? "+" : ""}${escHtml(r.bias)}°</td><td>${escHtml(r.corr)}°</td><td>${escHtml(r.weight)}</td><td>${escHtml(r.share)}%</td>`;
     tb.appendChild(tr);
   }
-  // Consensus row
+  // Consensus row (named `crow`: a local `tr` would shadow the i18n tr()).
   const first = data.forecast.find((i) => i.variable === "temperature_2m");
   if (first) {
-    const tr = document.createElement("tr");
-    tr.style.fontWeight = "700";
-    tr.style.background = "var(--accent-soft)";
-    tr.innerHTML = `<td>${escHtml(tr("consensus_row"))}</td><td></td><td></td><td>${escHtml(first.value)}°</td><td></td><td>100%</td>`;
-    tb.appendChild(tr);
+    const crow = document.createElement("tr");
+    crow.style.fontWeight = "700";
+    crow.style.background = "var(--accent-soft)";
+    crow.innerHTML = `<td>${escHtml(tr("consensus_row"))}</td><td></td><td></td><td>${escHtml(first.value)}°</td><td></td><td>100%</td>`;
+    tb.appendChild(crow);
   }
 }
 

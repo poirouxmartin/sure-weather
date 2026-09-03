@@ -6,7 +6,7 @@
 const CACHE = "sure-weather-v11";
 const RUNTIME = "sure-weather-tiles-v1";
 const RUNTIME_MAX = 600;
-const APP_SHELL = ["/", "/mini", "/static/app.css", "/static/app.js", "/static/i18n.js", "/static/local-provider.js", "/static/icon.svg",
+const APP_SHELL = ["/", "/mini.html", "/static/app.css", "/static/app.js", "/static/i18n.js", "/static/local-provider.js", "/static/icon.svg",
   "/static/icon-192.png", "/static/icon-512.png", "/static/icon-maskable-192.png", "/static/icon-maskable-512.png",
   "/manifest.webmanifest"];
 
