@@ -28,6 +28,7 @@ from .models import (
     OBSERVABLE_VARIABLES,
     Cell,
     ForecastSample,
+    Observation,
     Provider,
 )
 from .storage import Storage, _parse_dt
@@ -92,12 +93,15 @@ def _extrapolate_horizon_priors(
             key = (provider, cell_key, variable, bucket)
             if key in out:
                 continue
+            # Synthetic prior: deliberately < 3 samples so it NEVER counts
+            # as calibrated (fusion requires samples >= 3). It only softens
+            # the uncalibrated prior instead of faking learned confidence.
             out[key] = ProviderStat(
                 provider=provider,
                 cell_key=cell_key,
                 variable=variable,
                 horizon_h=bucket,
-                samples=max(3, base.samples // 4),
+                samples=min(2, max(1, base.samples // 4)),
                 bias=base.bias,
                 rmse=base.rmse * factor,
                 updated_at=base.updated_at,
@@ -114,7 +118,9 @@ def _summarize(forecast: list[dict], hours: int) -> dict:
         if item["variable"] in _SURE_VARIABLES:
             by_var.setdefault(item["variable"], []).append(item["confidence"])
             for lo, hi, label in bands:
-                if lo < item["horizon_h"] <= hi or (lo == 0 and item["horizon_h"] <= hi):
+                if lo < item["horizon_h"] <= hi or (
+                    lo == 0 and item["horizon_h"] <= hi
+                ):
                     horizons.setdefault(label, []).append(item["confidence"])
                     break
     summary = {"horizons": {}, "variables": {}}
@@ -142,13 +148,17 @@ class WeatherService:
         self.storage = storage
         self.config = config
         self._stats: dict[tuple[str, str, str, float], ProviderStat] | None = None
-        self._stats_fingerprint: tuple[str, int] | None = None
-        self._fc_cache: dict[tuple[float, float, int], tuple[float, dict]] = {}
+        self._stats_fingerprint: tuple[str, int, int] | None = None
+        self._fc_cache: dict[tuple[str, int], tuple[float, dict]] = {}
         self._fc_lock = threading.Lock()
         self._refreshed_at: dict[str, float] = {}
         self._calibrated_at: dict[str, float] = {}
+        self._refreshing: set[str] = set()
+        self._calibrating: set[str] = set()
         self._sun_cache: dict[tuple[str, str], dict] = {}
+        self._sun_lock = threading.Lock()
         self._backfilling: set[str] = set()
+        self._state_lock = threading.Lock()
         # Serializes stats computation: the boot warm-up and a concurrent
         # request must never aggregate the residual window twice (the first
         # request would otherwise wait for BOTH computations).
@@ -156,7 +166,7 @@ class WeatherService:
 
     # ---- forecast response cache ----
 
-    def _forecast_cached(self, key: tuple[float, float, int]) -> dict | None:
+    def _forecast_cached(self, key: tuple[str, int]) -> dict | None:
         with self._fc_lock:
             hit = self._fc_cache.get(key)
             if hit is None:
@@ -167,7 +177,7 @@ class WeatherService:
                 return None
             return data
 
-    def _forecast_store(self, key: tuple[float, float, int], data: dict) -> None:
+    def _forecast_store(self, key: tuple[str, int], data: dict) -> None:
         with self._fc_lock:
             if len(self._fc_cache) >= _FC_CACHE_MAX:
                 oldest = min(self._fc_cache, key=lambda k: self._fc_cache[k][0])
@@ -179,13 +189,18 @@ class WeatherService:
         with self._fc_lock:
             self._fc_cache.clear()
 
-    def _residuals_fingerprint(self, since: datetime) -> tuple[str, int]:
-        """Fingerprint of the residual pool used to invalidate the stats cache."""
-        row = self.storage._conn.execute(
-            "SELECT MAX(valid_at), COUNT(*) FROM residuals WHERE valid_at >= ?",
+    def _residuals_fingerprint(self, since: datetime) -> tuple[str, int, int]:
+        """Fingerprint of the residual pool used to invalidate the stats cache.
+
+        (MAX(valid_at), COUNT(*), SUM(rowid)) so an INSERT OR REPLACE that
+        corrects a residual without changing MAX/COUNT still invalidates.
+        Reads go through the storage lock (see Storage.tx / locked reads).
+        """
+        row = self.storage.locked_execute(
+            "SELECT MAX(valid_at), COUNT(*), COALESCE(SUM(rowid),0) FROM residuals WHERE valid_at >= ?",
             (since.isoformat(),),
         ).fetchone()
-        return (row[0] or "", int(row[1] or 0))
+        return (row[0] or "", int(row[1] or 0), int(row[2] or 0))
 
     def _load_stats(self) -> dict[tuple[str, str, str, float], ProviderStat]:
         """Materialize learned stats, spatially interpolated across cells.
@@ -215,9 +230,15 @@ class WeatherService:
                 return persisted
             stats: dict[tuple[str, str, str, float], ProviderStat] = {}
             now = datetime.now(timezone.utc)
-            for provider, cell_key, variable, horizon_h, samples, bias, mse in (
-                self.storage.residual_bias_stats(since)
-            ):
+            for (
+                provider,
+                cell_key,
+                variable,
+                horizon_h,
+                samples,
+                bias,
+                mse,
+            ) in self.storage.residual_bias_stats(since):
                 stats[(provider, cell_key, variable, horizon_h)] = ProviderStat(
                     provider=provider,
                     cell_key=cell_key,
@@ -252,10 +273,12 @@ class WeatherService:
         - known cell: everything (run refresh, calibration) in background.
         """
         now = datetime.now(timezone.utc)
-        reach = self.storage._conn.execute(
-            "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=?",
-            (center.key,),
-        ).fetchone()
+        # Coverage of the *latest* run (not any stale long-range row): an old
+        # analysis row with a far valid_at must not pass for fresh coverage.
+        reach = self.storage.locked_fetchone(
+            "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=? AND issued_at >= ?",
+            (center.key, (now - timedelta(hours=24)).isoformat()),
+        )
         has_data = bool(reach and reach[0])
         reach_ok = has_data and _parse_dt(reach[0]) >= now + timedelta(hours=24)
 
@@ -265,6 +288,7 @@ class WeatherService:
             # multi-model + 92-day calibration backfill runs in background
             # and upgrades the zone afterwards.
             self.storage.upsert_cells([(center.key, center.lat, center.lon)])
+            fast_ok = False
             try:
                 fast = OpenMeteoCollector(self.config).fetch_forecast(
                     center,
@@ -274,18 +298,21 @@ class WeatherService:
                 )
                 self.storage.insert_forecasts(fast)
                 self._forecast_invalidate()
+                fast_ok = bool(fast)
             except Exception as exc:
                 logger.warning("fast first fetch failed for %s: %s", center.key, exc)
             self._schedule_full_backfill(center, lat, lon)
-            return False
+            # Only mark partial when the fast fetch actually failed: a filled
+            # 7-day run serves the full window immediately.
+            return fast_ok
 
         # Known cell: refresh local stations cheaply so the "now" consensus
         # stays honest, but skip when we just ingested this zone minutes ago.
-        fresh = self.storage._conn.execute(
+        fresh = self.storage.locked_fetchone(
             "SELECT MAX(time) FROM observations WHERE cell_key=? "
             "AND provider LIKE 'metar_%'",
             (center.key,),
-        ).fetchone()
+        )
         if not (fresh and fresh[0]):
             self._ingest_nearby_stations(lat, lon)
         elif (datetime.now(timezone.utc) - _parse_dt(fresh[0])) >= timedelta(hours=1):
@@ -298,15 +325,23 @@ class WeatherService:
 
     def _schedule_refresh(self, center: Cell) -> None:
         """Run the 7-day refresh in background: serve stale meanwhile."""
+        with self._state_lock:
+            last = self._refreshed_at.get(center.key)
+            if center.key in self._refreshing:
+                return
+            if last is not None and (time.time() - last) < 3600:
+                return
+            self._refreshing.add(center.key)
         threading.Thread(
             target=self._refresh_model_run_if_stale, args=(center,), daemon=True
         ).start()
 
     def _schedule_full_backfill(self, center: Cell, lat: float, lon: float) -> None:
         """Run the complete zone bootstrap in background (guarded)."""
-        if center.key in self._backfilling:
-            return
-        self._backfilling.add(center.key)
+        with self._state_lock:
+            if center.key in self._backfilling:
+                return
+            self._backfilling.add(center.key)
         threading.Thread(
             target=self._full_backfill, args=(center, lat, lon), daemon=True
         ).start()
@@ -354,7 +389,8 @@ class WeatherService:
             self._schedule_calibration(center)
             logger.info("full backfill done for %s", center.key)
         finally:
-            self._backfilling.discard(center.key)
+            with self._state_lock:
+                self._backfilling.discard(center.key)
 
     def _refresh_model_run_if_stale(self, center: Cell) -> None:
         """Re-collect a fast 7-day forecast when the stored run is stale.
@@ -369,44 +405,48 @@ class WeatherService:
           buckets.
         A cell is refreshed at most once per hour to spare the upstream API.
         """
-        now = datetime.now(timezone.utc)
-        # A healthy 7-day run reaches ~5+ days ahead; anything shorter (an
-        # old backfill, a truncated run) must be refreshed even though it
-        # still technically covers the next few hours.
-        future = self.storage._conn.execute(
-            "SELECT COUNT(*) FROM forecasts WHERE cell_key=? AND valid_at > ?",
-            (center.key, (now + timedelta(hours=3)).isoformat()),
-        ).fetchone()
-        has_future = bool(future and future[0] > 0)
-        reach = self.storage._conn.execute(
-            "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=?",
-            (center.key,),
-        ).fetchone()
-        reach_ok = bool(reach and reach[0]) and _parse_dt(reach[0]) >= now + timedelta(
-            hours=120
-        )
-        row = self.storage._conn.execute(
-            "SELECT MAX(issued_at) FROM forecasts WHERE cell_key=?",
-            (center.key,),
-        ).fetchone()
-        issued = _parse_dt(row[0]) if row and row[0] else None
-        run_fresh = issued is not None and (now - issued) <= timedelta(hours=12)
-        if has_future and reach_ok and run_fresh:
-            return
-        last = self._refreshed_at.get(center.key)
-        if last is not None and (time.time() - last) < 3600:
-            return
         try:
-            collector = OpenMeteoCollector(self.config)
-            samples = collector.fetch_forecast(center, forecast_days=7)
-            self.storage.insert_forecasts(samples)
-            self._refreshed_at[center.key] = time.time()
-            self._forecast_invalidate()
-        except Exception as exc:
-            # Best-effort: a stale run is better than an empty forecast only
-            # marginally; never break the request over a refresh failure.
-            logger.warning("run refresh failed for %s: %s", center.key, exc)
-            return
+            now = datetime.now(timezone.utc)
+            # A healthy 7-day run reaches ~5+ days ahead; anything shorter (an
+            # old backfill, a truncated run) must be refreshed even though it
+            # still technically covers the next few hours.
+            future = self.storage.locked_fetchone(
+                "SELECT COUNT(*) FROM forecasts WHERE cell_key=? AND valid_at > ?",
+                (center.key, (now + timedelta(hours=3)).isoformat()),
+            )
+            has_future = bool(future and future[0] > 0)
+            reach = self.storage.locked_fetchone(
+                "SELECT MAX(valid_at) FROM forecasts WHERE cell_key=?",
+                (center.key,),
+            )
+            reach_ok = bool(reach and reach[0]) and _parse_dt(
+                reach[0]
+            ) >= now + timedelta(hours=120)
+            row = self.storage.locked_fetchone(
+                "SELECT MAX(issued_at) FROM forecasts WHERE cell_key=?",
+                (center.key,),
+            )
+            issued = _parse_dt(row[0]) if row and row[0] else None
+            run_fresh = issued is not None and (now - issued) <= timedelta(hours=12)
+            if has_future and reach_ok and run_fresh:
+                return
+            try:
+                collector = OpenMeteoCollector(self.config)
+                samples = collector.fetch_forecast(center, forecast_days=7)
+                self.storage.insert_forecasts(samples)
+                with self._state_lock:
+                    self._refreshed_at[center.key] = time.time()
+                self._forecast_invalidate()
+            except Exception as exc:
+                # Backoff 10 min on failure so every request doesn't respawn
+                # a thread hammering a failing upstream.
+                with self._state_lock:
+                    self._refreshed_at[center.key] = time.time() - 3000
+                logger.warning("run refresh failed for %s: %s", center.key, exc)
+                return
+        finally:
+            with self._state_lock:
+                self._refreshing.discard(center.key)
 
     def _schedule_calibration(self, center: Cell) -> None:
         """Spawn the hourly calibration cycle in a daemon thread.
@@ -414,12 +454,18 @@ class WeatherService:
         The timestamp is claimed before spawning so concurrent requests for
         the same zone start at most one cycle per hour.
         """
-        now = time.time()
-        last = self._calibrated_at.get(center.key)
-        if last is not None and (now - last) < 3600:
-            return
-        self._calibrated_at[center.key] = now
-        threading.Thread(target=self._calibrate_cell, args=(center,), daemon=True).start()
+        with self._state_lock:
+            now = time.time()
+            last = self._calibrated_at.get(center.key)
+            if center.key in self._calibrating:
+                return
+            if last is not None and (now - last) < 3600:
+                return
+            self._calibrated_at[center.key] = now
+            self._calibrating.add(center.key)
+        threading.Thread(
+            target=self._calibrate_cell, args=(center,), daemon=True
+        ).start()
 
     def _calibrate_cell(self, center: Cell) -> None:
         """Refresh residuals for a cell so its calibration stays live.
@@ -445,18 +491,18 @@ class WeatherService:
             analysis = collector.fetch_forecast(
                 center, forecast_days=1, past_days=2, include_high_res=False
             )
-            self.storage.insert_forecasts(
-                [s for s in analysis if s.valid_at <= end]
-            )
+            self.storage.insert_forecasts([s for s in analysis if s.valid_at <= end])
 
             # Loop 2 — archive catch-up, only when yesterday is missing.
             yesterday = (end - timedelta(days=1)).date().isoformat()
-            have = self.storage._conn.execute(
+            have = self.storage.locked_fetchone(
                 "SELECT MAX(time) FROM observations WHERE cell_key=? "
                 "AND provider IN ('era5_seamless','era5_land','cerra')",
                 (center.key,),
-            ).fetchone()
-            latest_obs = _parse_dt(have[0]).date().isoformat() if have and have[0] else ""
+            )
+            latest_obs = (
+                _parse_dt(have[0]).date().isoformat() if have and have[0] else ""
+            )
             if latest_obs < yesterday:
                 obs = collector.fetch_historical(
                     center, end - timedelta(days=8), end - timedelta(days=1)
@@ -477,16 +523,16 @@ class WeatherService:
             # New residuals shift the fingerprint: drop cached responses so
             # the next request fuses with fresh calibration.
             self._forecast_invalidate()
-            logger.info(
-                "calibration %s: +%d residuals", center.key, len(residuals)
-            )
+            logger.info("calibration %s: +%d residuals", center.key, len(residuals))
         except Exception as exc:
             # Calibration is a background concern: a failed cycle must never
             # break the forecast request; retry in ~10 minutes.
-            self._calibrated_at[center.key] = time.time() - 3000
-            logger.warning(
-                "calibration failed for %s: %s", center.key, exc
-            )
+            with self._state_lock:
+                self._calibrated_at[center.key] = time.time() - 3000
+            logger.warning("calibration failed for %s: %s", center.key, exc)
+        finally:
+            with self._state_lock:
+                self._calibrating.discard(center.key)
 
     def _ingest_nearby_stations(self, lat: float, lon: float) -> None:
         """Fetch recent METAR reports near (lat, lon) and store observations."""
@@ -526,7 +572,9 @@ class WeatherService:
         """
         cells_near = [
             c.key
-            for c in iter_cells_nearby(lat, lon, self.config.obs_search_radius_km, self.config)
+            for c in iter_cells_nearby(
+                lat, lon, self.config.obs_search_radius_km, self.config
+            )
         ]
         if not cells_near:
             return []
@@ -550,9 +598,9 @@ class WeatherService:
         for o in latest.values():
             if (now - o.time) > timedelta(hours=self.config.obs_recency_halflife_h * 3):
                 continue
-            # The report is treated as a measurement at the current full hour
-            # (models emit hourly timestamps starting at the next full hour),
-            # so it joins the same consensus bucket as the model forecasts.
+            # Honest dating: issued_at stays the real report time so the
+            # horizon bucket reflects the observation's age; valid_at is the
+            # hourly bucket it constrains (models emit hourly timestamps).
             valid = now.replace(minute=0, second=0, microsecond=0)
             if now.minute > 0 or now.second > 0 or now.microsecond > 0:
                 valid = valid + timedelta(hours=1)
@@ -561,7 +609,7 @@ class WeatherService:
                     provider=o.provider,
                     cell_key=o.cell_key,
                     variable=o.variable,
-                    issued_at=valid,
+                    issued_at=o.time,
                     valid_at=valid,
                     value=o.value,
                 )
@@ -571,11 +619,13 @@ class WeatherService:
     def forecast(self, lat: float, lon: float, hours: int = 48) -> dict:
         """Return the fused forecast for a point, bucketed hourly."""
         now = datetime.now(timezone.utc)
-        key = (round(lat, 2), round(lon, 2), hours)
+        center = cell_from_point(lat, lon, self.config)
+        # Cache by cell key (not round(lat,2)): two nearby points in
+        # different 0.1° cells must never share a response.
+        key = (center.key, hours)
         cached = self._forecast_cached(key)
         if cached is not None:
             return cached
-        center = cell_from_point(lat, lon, self.config)
         sufficient = self._ensure_cell_data(center, lat, lon)
         # Model forecasts are fetched per-cell; the fusion targets the point's
         # own cell (global NWP models do not vary meaningfully over ~11 km,
@@ -597,11 +647,7 @@ class WeatherService:
             self._schedule_refresh(center)
         # Live station observations near the point join the consensus for the
         # current hours: the "now" forecast leans on real local measurements.
-        samples.extend(
-            self._nearby_station_samples(
-                lat, lon, now - timedelta(hours=6)
-            )
-        )
+        samples.extend(self._nearby_station_samples(lat, lon, now - timedelta(hours=6)))
         # Fuse only the requested window: latest_forecasts returns every
         # valid time of the stored run (~7 days), while the response covers
         # `hours`. Filtering first cuts the fusion work by that ratio.
@@ -630,9 +676,7 @@ class WeatherService:
                     "high": round(high, 2),
                     # "Sure" only when calibration is active AND confidence is high.
                     "sure": r.calibrated and r.confidence >= 0.98,
-                    "horizon_h": round(
-                        (r.valid_at - now).total_seconds() / 3600.0, 1
-                    ),
+                    "horizon_h": round((r.valid_at - now).total_seconds() / 3600.0, 1),
                     "contributors": [p for p, _, _ in r.contributors],
                 }
             )
@@ -650,20 +694,35 @@ class WeatherService:
                     continue
                 breakdown_valid_at = vat
                 from collections import defaultdict as _dd
+
+                from .fusion import base_weight as _base_weight
+
+                # Group per provider, keeping each sample's own bucket so the
+                # displayed weights match the fusion (inverse-variance +
+                # staleness), not a parallel formula.
                 by_prov: dict[str, list] = _dd(list)
                 for s in cands:
-                    by_prov[s.provider].append(s.value)
-                bucket = horizon_bucket(vat, cands[0].issued_at)
-                for prov, vals in by_prov.items():
-                    raw = sum(vals) / len(vals)
-                    stat = stats.get((prov, center.key, var0, bucket))
+                    by_prov[s.provider].append(s)
+                for prov, ss in by_prov.items():
+                    raw = sum(s.value for s in ss) / len(ss)
+                    # Representative stat: the sample closest to the hour.
+                    rep = min(
+                        ss,
+                        key=lambda s: abs((s.valid_at - s.issued_at).total_seconds()),
+                    )
+                    bucket = horizon_bucket(rep.valid_at, rep.issued_at)
+                    stat = stats.get((prov, rep.cell_key, var0, bucket))
                     bias = stat.bias if stat and stat.samples >= 3 else 0.0
-                    w = 2.0 if kinds.get(prov) == "station" else 1.0
-                    if stat and stat.rmse > 0:
-                        w = 1.0 / (stat.rmse * stat.rmse + 0.5)
-                        if kinds.get(prov) == "station":
-                            w *= 2.0
-                    breakdown.append({"provider": prov, "raw": round(raw, 2), "bias": round(bias, 2), "corr": round(raw - bias, 2), "weight": round(w, 3)})
+                    w = _base_weight(stat, kinds.get(prov, "model"), bucket, now)
+                    breakdown.append(
+                        {
+                            "provider": prov,
+                            "raw": round(raw, 2),
+                            "bias": round(bias, 2),
+                            "corr": round(raw - bias, 2),
+                            "weight": round(w, 3),
+                        }
+                    )
                 breakdown.sort(key=lambda x: x["weight"], reverse=True)
                 tot = sum(x["weight"] for x in breakdown) or 1
                 for x in breakdown:
@@ -680,18 +739,25 @@ class WeatherService:
             "summary": _summarize(out, hours),
             "partial": (not sufficient) or (not out),
             "breakdown": breakdown,
-            "breakdown_valid_at": breakdown_valid_at.isoformat() if breakdown_valid_at else None,
+            "breakdown_valid_at": breakdown_valid_at.isoformat()
+            if breakdown_valid_at
+            else None,
         }
         # Real solar times for the night bands / day-night icons: cached for
         # the process lifetime (they shift by minutes between model runs).
+        # Contract: payload ALWAYS carries a "sun" key (possibly {"daily":
+        # {} }) so the client never branches on its absence.
         try:
             day_key = now.date().isoformat()
-            sun = self._sun_cache.get((center.key, day_key))
+            with self._sun_lock:
+                sun = self._sun_cache.get((center.key, day_key))
             if sun is None:
                 sun = OpenMeteoCollector(self.config).fetch_sun(center)
-                self._sun_cache[(center.key, day_key)] = sun
+                with self._sun_lock:
+                    self._sun_cache[(center.key, day_key)] = sun
             payload["sun"] = {"daily": sun}
         except Exception as exc:
+            payload["sun"] = {"daily": {}}
             logger.warning("sun times unavailable for %s: %s", center.key, exc)
         if out:
             self._forecast_store(key, payload)

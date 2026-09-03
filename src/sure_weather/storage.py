@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
 );
 CREATE INDEX IF NOT EXISTS idx_fc_valid ON forecasts(valid_at);
 CREATE INDEX IF NOT EXISTS idx_fc_cell  ON forecasts(cell_key, variable, issued_at);
+CREATE INDEX IF NOT EXISTS idx_fc_cover ON forecasts(provider, cell_key, variable, issued_at, valid_at);
 
 CREATE TABLE IF NOT EXISTS residuals (
     provider   TEXT NOT NULL,
@@ -150,6 +151,15 @@ class Storage:
                 self._conn.rollback()
                 raise
 
+    def locked_execute(self, sql: str, params: tuple = ()):
+        """Thread-safe read: never touch the shared connection outside the lock."""
+        with self._tx_lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def locked_fetchone(self, sql: str, params: tuple = ()):
+        with self._tx_lock:
+            return self._conn.execute(sql, params).fetchone()
+
     # ---- providers ----
 
     def upsert_provider(self, provider: Provider) -> None:
@@ -161,13 +171,11 @@ class Storage:
             )
 
     def get_providers(self) -> list[Provider]:
-        rows = self._conn.execute("SELECT name, kind FROM providers").fetchall()
+        rows = self.locked_execute("SELECT name, kind FROM providers")
         return [Provider(name=r[0], kind=r[1]) for r in rows]
 
     def get_providers_by_kind(self, kind: str) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT name FROM providers WHERE kind=?", (kind,)
-        ).fetchall()
+        rows = self.locked_execute("SELECT name FROM providers WHERE kind=?", (kind,))
         return [r[0] for r in rows]
 
     # ---- cells ----
@@ -181,7 +189,7 @@ class Storage:
             )
 
     def get_cells(self) -> list[Cell]:
-        rows = self._conn.execute("SELECT key, lat, lon FROM cells").fetchall()
+        rows = self.locked_execute("SELECT key, lat, lon FROM cells")
         return [Cell(key=r[0], lat=r[1], lon=r[2]) for r in rows]
 
     # ---- observations ----
@@ -221,7 +229,7 @@ class Storage:
         if until is not None:
             sql += " AND time <= ?"
             params.append(until.isoformat())
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self.locked_execute(sql, tuple(params))
         return [
             Observation(
                 provider=r[0],
@@ -280,7 +288,7 @@ class Storage:
         if until is not None:
             sql += " AND valid_at <= ?"
             params.append(until.isoformat())
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self.locked_execute(sql, tuple(params))
         return [
             ForecastSample(
                 provider=r[0],
@@ -337,7 +345,7 @@ class Storage:
             "JOIN best b ON b.provider = f.provider AND b.cell_key = f.cell_key "
             "  AND b.variable = f.variable AND b.issued_at = f.issued_at AND b.rn = 1"
         )
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self.locked_execute(sql, tuple(params))
         return [
             ForecastSample(
                 provider=r[0],
@@ -369,7 +377,7 @@ class Storage:
             "FROM residuals WHERE valid_at >= ? "
             "GROUP BY provider, cell_key, variable, horizon_h"
         )
-        return self._conn.execute(sql, (since.isoformat(),)).fetchall()
+        return self.locked_execute(sql, (since.isoformat(),))
 
     def load_stats_cache(self, fingerprint: str):
         """Persisted calibration stats for this exact residual fingerprint.
@@ -378,10 +386,10 @@ class Storage:
         residuals is the dominant cold-start cost. Returns a dict keyed
         (provider, cell, variable, horizon) of ProviderStat, or None.
         """
-        row = self._conn.execute(
+        row = self.locked_fetchone(
             "SELECT payload FROM stats_cache WHERE id=1 AND fingerprint=?",
             (fingerprint,),
-        ).fetchone()
+        )
         if not row:
             return None
         import json
@@ -412,8 +420,13 @@ class Storage:
         payload = json.dumps(
             [
                 {
-                    "p": k[0], "c": k[1], "v": k[2], "h": k[3],
-                    "n": st.samples, "b": st.bias, "r": st.rmse,
+                    "p": k[0],
+                    "c": k[1],
+                    "v": k[2],
+                    "h": k[3],
+                    "n": st.samples,
+                    "b": st.bias,
+                    "r": st.rmse,
                     "u": st.updated_at.isoformat(),
                 }
                 for k, st in stats.items()
@@ -427,11 +440,25 @@ class Storage:
             )
 
     # ---- push subscriptions ----
-    def add_push_subscription(self, endpoint: str, p256dh: str, auth: str, lat: float | None = None, lon: float | None = None) -> None:
+    def add_push_subscription(
+        self,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        lat: float | None = None,
+        lon: float | None = None,
+    ) -> None:
         with self.tx() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO push_subscriptions (endpoint, p256dh, auth, lat, lon, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (endpoint, p256dh, auth, lat, lon, datetime.now(timezone.utc).isoformat()),
+                (
+                    endpoint,
+                    p256dh,
+                    auth,
+                    lat,
+                    lon,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
 
     def remove_push_subscription(self, endpoint: str) -> None:
@@ -439,8 +466,13 @@ class Storage:
             conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
 
     def list_push_subscriptions(self) -> list[dict]:
-        rows = self._conn.execute("SELECT endpoint, p256dh, auth, lat, lon FROM push_subscriptions").fetchall()
-        return [{"endpoint": r[0], "p256dh": r[1], "auth": r[2], "lat": r[3], "lon": r[4]} for r in rows]
+        rows = self.locked_execute(
+            "SELECT endpoint, p256dh, auth, lat, lon FROM push_subscriptions"
+        )
+        return [
+            {"endpoint": r[0], "p256dh": r[1], "auth": r[2], "lat": r[3], "lon": r[4]}
+            for r in rows
+        ]
 
     def insert_residuals(self, residuals: Iterable[Residual]) -> int:
         rows = [
@@ -485,7 +517,7 @@ class Storage:
         if until is not None:
             sql += " AND valid_at <= ?"
             params.append(until.isoformat())
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self.locked_execute(sql, tuple(params))
         return [
             Residual(
                 provider=r[0],

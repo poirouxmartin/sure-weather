@@ -4,11 +4,29 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from .calibration import learn_stats
-from .collectors.open_meteo import DEFAULT_ARCHIVE
 from .config import Config
 from .fusion import _VARIABLE_TOLERANCE, fuse, spatial_stats
 from .models import ALL_VARIABLES, OBSERVABLE_VARIABLES
 from .storage import Storage
+
+# Same ground-truth priority as calibration (station > reanalysis):
+# validating only against the archive while the fusion learns from stations
+# would systematically mis-measure reliability.
+_GT_RANK = {"station": 0, "model": 1}
+
+
+def _best_truth_index(observations, kinds) -> dict:
+    index: dict[tuple[str, datetime], float] = {}
+    rank: dict[tuple[str, datetime], int] = {}
+    for o in observations:
+        rounded = o.time.replace(minute=0, second=0, microsecond=0)
+        key = (o.variable, rounded)
+        r = _GT_RANK.get(kinds.get(o.provider, "model"), 1)
+        if key not in index or r < rank[key]:
+            index[key] = o.value
+            rank[key] = r
+    return index
+
 
 # Confidence bands reported in the reliability table.
 BANDS = [
@@ -60,11 +78,7 @@ def verify(
     observations = storage.observations_in_window(
         [cell_key], list(OBSERVABLE_VARIABLES), cutoff, now
     )
-    obs_index: dict[tuple[str, datetime], float] = {}
-    for o in observations:
-        if o.provider == DEFAULT_ARCHIVE:
-            rounded = o.time.replace(minute=0, second=0, microsecond=0)
-            obs_index[(o.variable, rounded)] = o.value
+    obs_index = _best_truth_index(observations, kinds)
 
     # Fuse all validation forecasts at once; the fusion groups per (var, valid_at).
     results = fuse(forecasts, stats, kinds, config, now)
@@ -147,11 +161,7 @@ def report_by_variable(
     observations = storage.observations_in_window(
         [cell_key], list(OBSERVABLE_VARIABLES), cutoff, now
     )
-    obs_index: dict[tuple[str, datetime], float] = {}
-    for o in observations:
-        if o.provider == DEFAULT_ARCHIVE:
-            rounded = o.time.replace(minute=0, second=0, microsecond=0)
-            obs_index[(o.variable, rounded)] = o.value
+    obs_index = _best_truth_index(observations, kinds)
 
     results = fuse(forecasts, stats, kinds, config, now)
 

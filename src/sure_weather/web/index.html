@@ -12,18 +12,21 @@
   <title>Sure Weather</title>
   <script>
     /* Theme before first paint to avoid a flash. */
-    const _th = localStorage.getItem("sure-weather-theme") ||
-      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    document.documentElement.dataset.theme = _th;
+    try {
+      const _th = localStorage.getItem("sure-weather-theme") ||
+        (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = _th;
+    } catch { document.documentElement.dataset.theme = "light"; }
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin="" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body data-sky="day">
@@ -43,13 +46,14 @@
           <span class="ic"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></span>
         </button>
         <div class="fav" id="fav-menu">
-          <button class="btn btn--ghost" id="fav-open" type="button" data-i18n-title="fav">
+          <button class="btn btn--ghost" id="fav-open" type="button" data-i18n-title="fav" aria-haspopup="true" aria-expanded="false">
             <span class="ic"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></span>
             <span data-i18n="fav">Favoris</span>
           </button>
           <ul class="fav__menu" id="fav-list" hidden></ul>
         </div>
         <form class="search" id="search-form" autocomplete="off">
+          <label class="sr-only" for="search-input" data-i18n="search">Rechercher</label>
           <input class="search__input" id="search-input" type="search"
                  data-i18n-ph="search_ph" placeholder="Ville, adresse, ou lat, lon…" />
           <button class="btn btn--primary" type="submit" data-i18n="search">Rechercher</button>
@@ -58,12 +62,12 @@
     </header>
 
     <!-- Loading / errors -->
-    <div class="loading" id="loading" hidden>
-      <div class="spinner"></div>
+    <div class="loading" id="loading" hidden aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
       <span data-i18n="loading_calib">Calcul de la confiance…</span>
       <span class="loading__status" id="load-status"></span>
     </div>
-    <div class="error" id="error" hidden></div>
+    <div class="error" id="error" hidden aria-live="assertive"></div>
     <div class="empty" id="empty" hidden data-i18n="empty">Aucune prévision disponible pour ce point.</div>
 
     <!-- Main content -->
@@ -77,7 +81,7 @@
             <button class="fav__toggle" id="fav-btn" type="button" data-i18n-title="fav_add">☆</button>
           </h1>
           <div class="hero__row">
-            <div class="verdict" id="verdict"></div>
+            <div class="verdict" id="verdict" aria-live="polite"></div>
             <div class="hero__badges">
               <div class="hero__sure" id="sure-badge" hidden></div>
               <div class="hero__stations" id="station-badge" hidden></div>
@@ -143,10 +147,10 @@
           <button class="btn btn--ghost" id="radar-play" type="button" data-i18n="play">▶ Lecture</button>
           <div class="map__timeline">
             <span class="map__time" id="radar-time">—</span>
-            <input type="range" id="radar-slider" min="0" max="1" value="1" aria-label="Ligne de temps radar" />
+            <input type="range" id="radar-slider" min="0" max="1" value="1" disabled aria-label="Ligne de temps radar" />
           </div>
-          <label class="map__layers">
-            <select id="map-layer">
+          <label class="map__layers"><span class="sr-only" data-i18n="map_title">Radar & carte</span>
+            <select id="map-layer" aria-label="Couche carte">
               <option value="radar" data-i18n="layer_radar">Radar pluie (live)</option>
               <option value="precip" data-i18n="layer_precip">Précipitation (modèle)</option>
               <option value="temp" data-i18n="layer_temp">Température</option>
@@ -158,7 +162,7 @@
             </select>
           </label>
           <label class="map__wind" data-i18n-title="wind_arrows_title">
-            <input type="checkbox" id="wind-toggle" checked /> 💨
+            <input type="checkbox" id="wind-toggle" checked aria-label="Flèches de vent" /> <span aria-hidden="true">💨</span>
           </label>
         </div>
         <div class="map-legend" id="map-legend" hidden></div>
@@ -177,13 +181,13 @@
       <!-- Sources détaillées : comment est calculée la température -->
       <section class="card" id="sources-card">
         <div class="card__head">
-          <h2 class="card__title">Détail des sources & calcul</h2>
+          <h2 class="card__title" data-i18n="sources_title">Détail des sources & calcul</h2>
           <span class="card__badge" id="sources-badge"></span>
         </div>
-        <p class="card__hint">Températures brutes par source à l'échéance la plus proche, biais corrigé, et moyenne pondérée calibrée (= notre prévision).</p>
+        <p class="card__hint" data-i18n="sources_hint">Températures brutes par source à l'échéance la plus proche, biais corrigé, et moyenne pondérée calibrée (= notre prévision).</p>
         <div class="tablewrap">
           <table class="table" id="sources-table">
-            <thead><tr><th>Source</th><th>Brut</th><th>Biais</th><th>Corrigé</th><th>Poids</th><th>Part</th></tr></thead>
+            <thead><tr><th data-i18n="th_src">Source</th><th data-i18n="th_raw">Brut</th><th data-i18n="th_bias">Biais</th><th data-i18n="th_corr">Corrigé</th><th data-i18n="th_weight">Poids</th><th data-i18n="th_share">Part</th></tr></thead>
             <tbody id="sources-body"></tbody>
           </table>
         </div>
@@ -191,7 +195,7 @@
 
       <!-- Hourly table -->
       <section class="card">
-        <h2 class="card__title" data-i18n="table_title">Détail horaire</h2>
+        <h2 class="card__title"><span data-i18n="table_title">Détail horaire</span> <span class="card__badge card__badge--muted" data-i18n="tz_note">heure locale</span></h2>
         <div class="tablewrap">
           <table class="table">
             <thead>
@@ -203,7 +207,7 @@
                 <th data-i18n="th_wind">Vent</th>
                 <th data-i18n="th_gust">Rafales</th>
                 <th data-i18n="th_hum">Humid</th>
-                <th>Nébulo</th>
+                <th data-i18n="th_cloud">Nébulo</th>
                 <th data-i18n="th_press">Pression</th>
                 <th data-i18n="th_vis">Visibilité</th>
               </tr>
@@ -219,9 +223,10 @@
     </footer>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="/static/i18n.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin="" defer></script>
+  <script src="/static/i18n.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

@@ -52,10 +52,15 @@ const LAST_KEY = "sure-weather-last";
   const p = new URLSearchParams(location.search);
   const la = parseFloat(p.get("lat"));
   const lo = parseFloat(p.get("lon"));
+  // Range + graph tab persist across shares/reloads (validated, else default).
+  const h = parseInt(p.get("hours") || "", 10);
+  if ([1, 3, 8, 24, 72, 168].includes(h)) state.hours = h;
+  const g = p.get("graph");
+  if (["temperature_2m", "precipitation", "wind_speed_10m", "pressure_msl", "relative_humidity_2m", "uv_index"].includes(g)) state.graph = g;
   if (Number.isFinite(la) && Number.isFinite(lo)) {
     state.lat = la;
     state.lon = lo;
-    state.name = p.get("name") || `${la.toFixed(4)}, ${lo.toFixed(4)}`;
+    state.name = (p.get("name") || `${la.toFixed(4)}, ${lo.toFixed(4)}`).slice(0, 80);
     try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
     return;
   }
@@ -65,7 +70,9 @@ const LAST_KEY = "sure-weather-last";
     if (raw) {
       const last = JSON.parse(raw);
       if (Number.isFinite(last.lat) && Number.isFinite(last.lon)) {
-        state.lat = last.lat; state.lon = last.lon; state.name = last.name || state.name;
+        state.lat = last.lat; state.lon = last.lon; state.name = (last.name || state.name).slice(0, 80);
+        if ([1, 3, 8, 24, 72, 168].includes(last.hours)) state.hours = last.hours;
+        if (typeof last.graph === "string") state.graph = last.graph;
         return;
       }
     }
@@ -75,7 +82,7 @@ const LAST_KEY = "sure-weather-last";
     navigator.geolocation.getCurrentPosition((pos) => {
       // Only auto-apply if the user never picked a place this session (still at default Paris and no URL).
       if (state.name === "Paris" && !location.search) {
-        state.lat = pos.coords.latitude; state.lon = pos.coords.longitude; state.name = "Ma position";
+        state.lat = pos.coords.latitude; state.lon = pos.coords.longitude; state.name = tr("my_position");
         try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
         syncUrl(); loadForecast();
       }
@@ -87,7 +94,7 @@ function saveLast() {
   try { localStorage.setItem(LAST_KEY, JSON.stringify(state)); } catch {}
 }
 function syncUrl() {
-  const q = `?lat=${state.lat}&lon=${state.lon}&name=${encodeURIComponent(state.name)}`;
+  const q = `?lat=${state.lat}&lon=${state.lon}&name=${encodeURIComponent(state.name)}&hours=${state.hours}&graph=${state.graph}`;
   history.replaceState(null, "", q);
   saveLast();
 }
@@ -167,8 +174,27 @@ function renderFavorites() {
 }
 
 function closeFavorites() {
-  const menu = el("fav-menu");
+  const menu = el("fav-list");
   if (menu) menu.hidden = true;
+}
+
+/* Escape user-controlled strings injected into HTML popups/tables. */
+function escHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function popupHtml(name, lat, lon) {
+  const div = document.createElement("div");
+  const b = document.createElement("b");
+  b.textContent = name;
+  const small = document.createElement("small");
+  small.textContent = `${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)}`;
+  div.appendChild(b);
+  div.appendChild(document.createElement("br"));
+  div.appendChild(small);
+  return div;
 }
 
 const $ = (s) => document.querySelector(s);
@@ -177,10 +203,12 @@ const hide = (n) => (n.hidden = true);
 const show = (n) => (n.hidden = false);
 
 function fmtTime(iso) {
+  // Note: browser-local timezone. Consulting a far-away place shows YOUR
+  // local hours, not the place's — the suffix in the table header says so.
   return new Date(iso).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
 function fmtDay(iso) {
-  return new Date(iso).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+  return new Date(iso).toLocaleDateString(LANG === "en" ? "en-GB" : "fr-FR", { weekday: "short", day: "numeric", month: "short" });
 }
 function round(v, d = 1) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
@@ -191,9 +219,11 @@ function interpolateTo15Min(times, byTime, hours) {
   if (!times.length) return { times, byTime };
   // Build a dense 15-min grid covering the requested window, interpolating
   // between the two nearest hourly points — so 1h = 5 points, 3h = 13, 8h = 33.
+  // Missing values are SKIPPED (never coerced to 0: a null temp must not
+  // render a fake 0° dip). Beyond the last hourly point: clamp to it.
   const start = new Date(times[0]).getTime();
   const end = start + hours * 3600000;
-  const sorted = times.slice().sort();
+  const sorted = times.slice().sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
   const outTimes = [];
   const outByTime = {};
   for (let t = start; t <= end; t += 900000) {
@@ -226,11 +256,13 @@ function interpolateTo15Min(times, byTime, hours) {
       if (!a) { row[v] = { ...b, valid_at: iso }; continue; }
       if (!b) { row[v] = { ...a, valid_at: iso }; continue; }
       if (v === "wind_direction_10m") {
+        if (a.value == null || b.value == null) continue;
         const av = a.value, bv = b.value;
         let diff = ((bv - av + 540) % 360) - 180;
         row[v] = { ...a, value: (av + diff * frac + 360) % 360, valid_at: iso };
       } else {
-        const va = a.value ?? 0, vb = b.value ?? 0;
+        if (a.value == null || b.value == null) continue;
+        const va = a.value, vb = b.value;
         const la = a.low ?? va, ha = a.high ?? va;
         const lb = b.low ?? vb, hb = b.high ?? vb;
         row[v] = { ...a, value: va + (vb - va) * frac, low: la + (lb - la) * frac, high: ha + (hb - ha) * frac, valid_at: iso };
@@ -254,11 +286,15 @@ function isNight(iso) {
   const t = new Date(iso).getTime();
   const d = sunData?.daily;
   if (d?.sunrise?.length && d?.sunset?.length) {
+    // Before today's sunrise: night, except when still after YESTERDAY's
+    // sunset window — compare against the previous day's sunset.
+    let prevSs = null;
     for (let i = 0; i < d.sunrise.length; i++) {
       const sr = new Date(d.sunrise[i]).getTime();
       const ss = new Date(d.sunset[i]).getTime();
-      if (t < sr) return i === 0 ? true : t < ss - 36e5 * 8 ? true : false;
+      if (t < sr) return prevSs === null ? true : t >= prevSs;
       if (t < ss) return false;
+      prevSs = ss;
     }
     return true;
   }
@@ -277,8 +313,10 @@ function kmh(item, d = 0) {
 
 /* Wind direction: meteorological convention — the sector the wind COMES
    FROM. The arrow shows where it GOES (deg + 180). */
-const CARDINALS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSO", "SO", "OSO", "O", "ONO", "NO", "NNO"];
+const CARDINALS_FR = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSO", "SO", "OSO", "O", "ONO", "NO", "NNO"];
+const CARDINALS_EN = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
 const FLOW_ARROWS = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
+function cardinals() { return LANG === "en" ? CARDINALS_EN : CARDINALS_FR; }
 
 function windDir(row) {
   const d = row.wind_direction_10m?.value;
@@ -286,7 +324,7 @@ function windDir(row) {
   const deg = ((d % 360) + 360) % 360;
   return {
     deg,
-    from: CARDINALS[Math.round(deg / 22.5) % 16],
+    from: cardinals()[Math.round(deg / 22.5) % 16],
     arrow: FLOW_ARROWS[Math.round(((deg + 180) % 360) / 45) % 8],
   };
 }
@@ -342,7 +380,7 @@ function confBadge(c, calibrated) {
   if (!calibrated || c === null || c === undefined) {
     return `<span class="hour__conf hour__conf--na">${tr("conf_na")}</span>`;
   }
-  if (c >= 0.98) return `<span class="hour__conf hour__conf--hi">sûr 98%+</span>`;
+  if (c >= 0.98) return `<span class="hour__conf hour__conf--hi">${LANG === "en" ? "sure 98%+" : "sûr 98%+"}</span>`;
   if (c >= 0.95) return `<span class="hour__conf hour__conf--hi">95%+</span>`;
   if (c >= 0.9) return `<span class="hour__conf hour__conf--mid">90%+</span>`;
   return `<span class="hour__conf hour__conf--lo"><90%</span>`;
@@ -401,9 +439,9 @@ function locateMe() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error(tr("geoloc_err")));
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, name: "Ma position" }),
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, name: tr("my_position") }),
       (err) => reject(new Error(tr("geoloc_err"))),
-      { timeout: 10000 }
+      { timeout: 10000, maximumAge: 600000 }
     );
   });
 }
@@ -474,13 +512,17 @@ async function setupPush() {
   if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window) || !notifBtn) return;
   if (Notification.permission === "denied") return;
   const reg = await navigator.serviceWorker.ready;
-  let sub = await reg.pushManager.getSubscription();
+  let sub = null;
+  try {
+    sub = await reg.pushManager.getSubscription();
+  } catch { sub = null; }
   if (sub) {
     notifBtn.textContent = "🔔✓";
     notifBtn.title = "Alertes activées";
     return;
   }
-  if (Notification.permission === "default") notifBtn.hidden = false;
+  // granted-but-no-subscription (cleaned/lost) must still offer resubscribe.
+  if (Notification.permission === "default" || Notification.permission === "granted") notifBtn.hidden = false;
 }
 if (notifBtn) {
   notifBtn.addEventListener("click", async () => {
@@ -497,9 +539,12 @@ if (notifBtn) {
       });
       notifBtn.textContent = "🔔✓";
       notifBtn.title = "Alertes activées";
-    } catch {}
+    } catch (e) {
+      notifBtn.hidden = false;
+      notifBtn.title = `Échec d'abonnement : ${e?.message || e}`;
+    }
   });
-  setupPush();
+  setupPush().catch(() => { if (notifBtn) notifBtn.hidden = false; });
 }
 
 /* ---- Load ---- */
@@ -531,7 +576,6 @@ function showSkeletons(name) {
   show(el("content"));
   hide(el("error"));
   hide(el("empty"));
-  document.body.classList.add("is-loading");
 }
 
 async function loadForecast() {
@@ -580,7 +624,6 @@ async function loadForecast() {
       }
       dataCache.set(key, data);
       if (dataCache.size > 24) dataCache.delete(dataCache.keys().next().value);
-      document.body.classList.remove("is-loading");
       hide(el("loading"));
       render(data, state.hours);
       // Partial response (background backfill still running): upgrade soon.
@@ -602,7 +645,6 @@ async function loadForecast() {
       if (token !== reqToken) return;
       const timedOut = e.name === "AbortError";
       if (timedOut && attempt === 1) continue; // transparent retry
-      document.body.classList.remove("is-loading");
       hide(el("loading"));
       if (!cached) hide(el("content"));
       showError(timedOut ? tr("err_slow") : e.message);
@@ -778,7 +820,7 @@ function renderSunCard(byTime, sun) {
   const dotY = 80 - 70 * Math.sin((Math.PI * pct) / 100);
   elSun.innerHTML = `
     <div class="sunuv__head"><span class="sunuv__title">${tr("sun_title")}</span><span class="sunuv__dur">${dur} ${tr("sun_daylight")}</span></div>
-    <svg viewBox="0 0 160 90" class="sunarc" role="img" aria-label="soleil"><path d="${arc}" fill="none" stroke="var(--line-strong)" stroke-width="3" stroke-linecap="round"/><circle cx="${dotX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="6" fill="#f59e0b" stroke="#fff" stroke-width="2"/></svg>
+    <svg viewBox="0 0 160 90" class="sunarc" role="img" aria-label="${escHtml(tr("sun_title"))}"><path d="${arc}" fill="none" stroke="var(--line-strong)" stroke-width="3" stroke-linecap="round"/><circle cx="${dotX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="6" fill="#f59e0b" stroke="#fff" stroke-width="2"/></svg>
     <div class="sunuv__row"><span>🌅 ${fmtSunHM(sunrise)}</span><span>🌇 ${fmtSunHM(sunset)}</span></div>`;
 }
 function renderUvCard(byTime) {
@@ -811,7 +853,12 @@ function renderAirCard(byTime) {
   const sparkP = pres.slice(0, 24);
   const mkPath = (arr, h, pad) => {
     if (!arr.length) return "";
-    const mn = Math.min(...arr), mx = Math.max(...arr), span = Math.max(1, mx - mn);
+    const mn = Math.min(...arr), mx = Math.max(...arr), span = mx - mn;
+    if (span < 1e-9) {
+      // Flat line (no variation): center it instead of faking a slope.
+      const y = (h / 2).toFixed(1);
+      return arr.map((_, i) => `${(i / Math.max(1, arr.length - 1)) * 100},${y}`).join(" ");
+    }
     return arr.map((v, i) => `${(i / Math.max(1, arr.length - 1)) * 100},${h - pad - ((v - mn) / span) * (h - pad * 2)}`).join(" ");
   };
   elAir.innerHTML = `
@@ -825,15 +872,18 @@ function renderAirCard(byTime) {
 /* Local station badge: a number, the words live in the tooltip. */
 function renderStationBadge(fc) {
   const badge = el("station-badge");
-  const first = fc.find((i) => i.contributors?.length);
-  const stations = new Set(first?.contributors?.filter((c) => c.startsWith("metar_")) ?? []);
+  // Union over the whole window (same as the footer): the first item alone
+  // undercounts when its hour lacks station reports.
+  const stations = new Set(
+    fc.flatMap((i) => i.contributors ?? []).filter((c) => c.startsWith("metar_"))
+  );
   if (!stations.size) {
     badge.hidden = true;
     return;
   }
   badge.hidden = false;
   badge.className = "station-badge";
-  badge.innerHTML = `📍 ${stations.size}`;
+  badge.innerHTML = `<span aria-hidden="true">📍</span> ${stations.size}`;
   badge.title = tr(stations.size > 1 ? "st_many" : "st_one", { n: stations.size });
 }
 
@@ -868,8 +918,8 @@ function renderSureBadge(summary) {
   }
   badge.hidden = false;
   badge.className = `sure-badge ${cls}`;
-  badge.innerHTML = `<span class="sure-badge__ic">${icon}</span>${avg}%`;
-  badge.title = `${share}% des valeurs sûres · confiance moyenne ${avg}% sur ${h}`;
+  badge.innerHTML = `<span class="sure-badge__ic" aria-hidden="true">${icon}</span>${avg}%`;
+  badge.title = tr("sure_tip", { s: share, a: avg, h });
 }
 
 /* ---- Visual verdict: the 24h answer without reading ---- */
@@ -893,12 +943,12 @@ function renderVerdict(times, byTime) {
     (h) => (h.row.precipitation_probability?.value ?? 0) >= 50 || (h.row.precipitation?.value ?? 0) > 0.3
   );
   if (!rainHours.length) {
-    pills.push(`<span class="vpill vpill--ok"><span class="vpill__ic">☀️</span>${tr("v_dry")}</span>`);
+    pills.push(`<span class="vpill vpill--ok"><span class="vpill__ic" aria-hidden="true">☀️</span>${tr("v_dry")}</span>`);
   } else {
     const first = rainHours[0];
     const peak = Math.max(...rainHours.map((h) => h.row.precipitation_probability?.value ?? 0));
     pills.push(
-      `<span class="vpill vpill--rain"><span class="vpill__ic">☔</span>${tr(first.t === times[0] ? "v_rain_now" : "v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
+      `<span class="vpill vpill--rain"><span class="vpill__ic" aria-hidden="true">☔</span>${tr(first.t === times[0] ? "v_rain_now" : "v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
     );
   }
   // Temperature: max & min with hour of max.
@@ -908,7 +958,7 @@ function renderVerdict(times, byTime) {
     const minT = Math.min(...temps);
     const at = rows.find((h) => h.row.temperature_2m?.value === maxT)?.t;
     pills.push(
-      `<span class="vpill"><span class="vpill__ic">🌡️</span><b style="color:${tempColor(maxT)}">${round(maxT)}°</b> / ${round(minT)}°${at ? ` <span class="vpill__sub">${tr("v_at", { h: fmtTime(at) })}</span>` : ""}</span>`
+      `<span class="vpill"><span class="vpill__ic" aria-hidden="true">🌡️</span><b style="color:${tempColor(maxT)}">${round(maxT)}°</b> / ${round(minT)}°${at ? ` <span class="vpill__sub">${tr("v_at", { h: fmtTime(at) })}</span>` : ""}</span>`
     );
   }
   // Wind alert when gusts become unpleasant.
@@ -916,25 +966,25 @@ function renderVerdict(times, byTime) {
   const maxGust = Math.max(...gusts, 0);
   if (maxGust >= 55) {
     const at = rows[gusts.indexOf(maxGust)]?.t;
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">💨</span>${tr("v_gust", { v: Math.round(maxGust) })}${at ? ` ${tr("v_at", { h: fmtTime(at) })}` : ""}</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic" aria-hidden="true">💨</span>${tr("v_gust", { v: Math.round(maxGust) })}${at ? ` ${tr("v_at", { h: fmtTime(at) })}` : ""}</span>`);
   }
   // Degraded data: stations only, no model run available right now.
   const hasModel = rows.some((h) =>
     Object.values(h.row).some((i) => i?.contributors?.some((c) => !c.startsWith("metar_")))
   );
   if (!hasModel) {
-    pills.push(`<span class="vpill vpill--warn" title="${tr("v_limited_tip")}"><span class="vpill__ic">⚠️</span>${tr("v_limited")}</span>`);
+    pills.push(`<span class="vpill vpill--warn" title="${tr("v_limited_tip")}"><span class="vpill__ic" aria-hidden="true">⚠️</span>${tr("v_limited")}</span>`);
   }
   // Single model / partial backfill: the full fusion is being assembled.
   if (window.__partialData) {
-    pills.push(`<span class="vpill" title="${tr("v_partial_tip")}"><span class="vpill__ic">⏳</span>${tr("v_partial")}</span>`);
+    pills.push(`<span class="vpill" title="${tr("v_partial_tip")}"><span class="vpill__ic" aria-hidden="true">⏳</span>${tr("v_partial")}</span>`);
   }
   // Heat alert.
   if (temps.length && Math.max(...temps) >= 32) {
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">🥵</span>${tr("v_heat")}</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic" aria-hidden="true">🥵</span>${tr("v_heat")}</span>`);
   }
   if (rows.length && rows.some((h) => h.row.temperature_2m?.value !== undefined && h.row.temperature_2m.value <= 0)) {
-    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic">❄️</span>${tr("v_frost")}</span>`);
+    pills.push(`<span class="vpill vpill--warn"><span class="vpill__ic" aria-hidden="true">❄️</span>${tr("v_frost")}</span>`);
   }
   wrap.innerHTML = pills.join("");
 }
@@ -1008,11 +1058,7 @@ function renderTimeline(times, byTime, graph = state.graph) {
     if (vSpan < 1.2) { const mid = (vMin + vMax) / 2; vMin = mid - 0.6; vMax = mid + 0.6; vSpan = 1.2; }
     if (graph === "precipitation" && vMax < 2) { vMax = 2; vSpan = vMax - vMin; }
   }
-  // For legacy temp-specific code below, alias
-  const tMin = vMin, tMax = vMax, tSpan = vSpan;
-  const temps = vals;
   const xAt = (i) => padL + colW * (i + 0.5);
-  const yTemp = (v) => padT + (1 - (v - tMin) / tSpan) * innerH;
   const yBase = H - padB;
 
   const yFor = (v) => padT + (1 - (v - vMin) / vSpan) * innerH;
@@ -1027,7 +1073,10 @@ function renderTimeline(times, byTime, graph = state.graph) {
     else if (graph === "relative_humidity_2m") { step = vSpan <= 20 ? 10 : 20; fmt = (x) => `${Math.round(x)}%`; }
     else { step = vSpan <= 3 ? 0.5 : vSpan <= 6 ? 1 : vSpan <= 12 ? 2 : 5; fmt = (x) => `${x % 1 === 0 ? x.toFixed(0) : x.toFixed(1)}°`; }
     const start = Math.ceil(vMin / step) * step;
-    for (let v = start; v <= vMax + 1e-9; v += step) {
+    // Integer tick walk avoids 0.1+0.2-style float drift on 0.5 steps.
+    const nTicks = Math.max(0, Math.floor((vMax - start) / step + 1e-9));
+    for (let k = 0; k <= nTicks; k++) {
+      const v = start + k * step;
       const y = yFor(v);
       if (y < padT - 4 || y > H - padB + 4) continue;
       parts.push(`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1" opacity=".45"/>`);
@@ -1113,7 +1162,7 @@ function renderTimeline(times, byTime, graph = state.graph) {
     `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now" font-size="11">${tr("now_label")}</text>`
   );
 
-  chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Prévision horaire">${parts.join("")}</svg>`;
+  chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="${escHtml(tr("mg_title"))}">${parts.join("")}</svg>`;
 }
 
 window.addEventListener("resize", (() => {
@@ -1191,7 +1240,7 @@ function renderConfidence(fc) {
     div.innerHTML = `
       <div class="var__head">
         <span class="var__label">${varLabel(v)}</span>
-        <span class="var__value" style="color:${color}">${pct}% · ${Math.round(sureShare * 100)}% sûres</span>
+        <span class="var__value" style="color:${color}">${tr("conf_sure_share", { p: pct, s: Math.round(sureShare * 100) })}</span>
       </div>
       <div class="var__track">
         <div class="var__bar" style="width:${pct}%; background:${color}"></div>
@@ -1200,7 +1249,7 @@ function renderConfidence(fc) {
   }
   if (overall.length) {
     const m = Math.round(overall.reduce((a, b) => a + b, 0) / overall.length);
-    el("conf-overall").textContent = `moyenne ${m}% (calibrée)`;
+    el("conf-overall").textContent = tr("conf_avg", { m });
   }
 }
 
@@ -1219,7 +1268,7 @@ function renderSources(data) {
   }
   for (const r of bd) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.provider}</td><td>${r.raw}°</td><td>${r.bias > 0 ? "+" : ""}${r.bias}°</td><td>${r.corr}°</td><td>${r.weight}</td><td>${r.share}%</td>`;
+    tr.innerHTML = `<td>${escHtml(r.provider)}</td><td>${escHtml(r.raw)}°</td><td>${r.bias > 0 ? "+" : ""}${escHtml(r.bias)}°</td><td>${escHtml(r.corr)}°</td><td>${escHtml(r.weight)}</td><td>${escHtml(r.share)}%</td>`;
     tb.appendChild(tr);
   }
   // Consensus row
@@ -1228,7 +1277,7 @@ function renderSources(data) {
     const tr = document.createElement("tr");
     tr.style.fontWeight = "700";
     tr.style.background = "var(--accent-soft)";
-    tr.innerHTML = `<td>→ Notre prévision</td><td></td><td></td><td>${first.value}°</td><td></td><td>100%</td>`;
+    tr.innerHTML = `<td>${escHtml(tr("consensus_row"))}</td><td></td><td></td><td>${escHtml(first.value)}°</td><td></td><td>100%</td>`;
     tb.appendChild(tr);
   }
 }
@@ -1236,11 +1285,18 @@ function renderSources(data) {
 function renderTable(times, byTime) {
   const tb = el("table-body");
   tb.innerHTML = "";
-  // Point values in cells; the honest range moves to a hover tooltip so the
-  // table stays scannable. The date appears on the first row of each day.
+  // Point value + small honest range underneath (touch-visible, unlike the
+  // title tooltip which is hover-only). The date appears once per day.
   const tip = (it, d = 1) =>
     it && it.low !== it.high ? ` title="fourchette ${round(it.low, d)}–${round(it.high, d)}"` : "";
   const val = (it, d = 1, suf = "") => (it ? `${round(it.value, d)}${suf}` : "—");
+  const cell = (it, d = 1, suf = "") => {
+    if (!it) return "—";
+    const base = `${round(it.value, d)}${suf}`;
+    if (it.low === undefined || it.high === undefined || it.low === it.high) return base;
+    if (it.calibrated && it.confidence >= 0.98) return base;
+    return `${base}<div class="tr__day">${round(it.low, d)}–${round(it.high, d)}${suf}</div>`;
+  };
   let lastDay = null;
   for (const t of times) {
     const row = byTime[t] || {};
@@ -1250,7 +1306,7 @@ function renderTable(times, byTime) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${fmtTime(t)}${showDay ? `<div class="tr__day">${day}</div>` : ""}</td>
-      <td${tip(row.temperature_2m)}>${row.temperature_2m ? round(row.temperature_2m.value) + "°" : "—"}</td>
+      <td${tip(row.temperature_2m)}>${cell(row.temperature_2m, 0, "°")}</td>
       <td${tip(row.dew_point_2m)}>${val(row.dew_point_2m)}°</td>
       <td${tip(row.precipitation_probability, 0)}>${val(row.precipitation_probability, 0, "%")}</td>
       <td${tip(row.wind_speed_10m, 0)}>${row.wind_speed_10m ? Math.round(row.wind_speed_10m.value * 3.6) + " km/h" : "—"}</td>
@@ -1304,12 +1360,25 @@ $("#fav-btn").addEventListener("click", toggleFavorite);
 
 $("#fav-open").addEventListener("click", () => {
   const menu = el("fav-list");
+  const btn = el("fav-open");
   menu.hidden = !menu.hidden;
+  btn?.setAttribute("aria-expanded", String(!menu.hidden));
 });
-
 document.addEventListener("click", (e) => {
   const menu = el("fav-list");
-  if (menu && !menu.hidden && !e.target.closest(".fav")) menu.hidden = true;
+  if (menu && !menu.hidden && !e.target.closest(".fav")) {
+    menu.hidden = true;
+    el("fav-open")?.setAttribute("aria-expanded", "false");
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const menu = el("fav-list");
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      el("fav-open")?.setAttribute("aria-expanded", "false");
+    }
+  }
 });
 
 $("#range-seg").addEventListener("click", (e) => {
@@ -1329,6 +1398,7 @@ document.getElementById("graph-tabs")?.addEventListener("click", (e) => {
   document.querySelectorAll(".graph-tab").forEach((b) => b.classList.remove("graph-tab--active"));
   btn.classList.add("graph-tab--active");
   state.graph = btn.dataset.graph;
+  syncUrl();
   if (lastMeteo) renderTimeline(lastMeteo.times, lastMeteo.byTime, state.graph);
 });
 
@@ -1355,7 +1425,12 @@ let windLayer = null;
 let windTimer = null;
 
 function initMap() {
-  if (map || !window.L) return;
+  if (map) return;
+  if (!window.L) {
+    // Offline/CDN-blocked: say so instead of a silent gray box.
+    el("radar-status").textContent = tr("radar_err");
+    return;
+  }
   map = L.map("map", { zoomControl: true }).setView([state.lat, state.lon], 9);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
@@ -1370,12 +1445,12 @@ function initMap() {
       iconAnchor: [7, 7],
     }),
   }).addTo(map);
-  marker.bindPopup(`<b>${state.name}</b><br><small>${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}</small>`);
+  marker.bindPopup(popupHtml(state.name, state.lat, state.lon));
   marker.on("dragend", () => {
     const p = marker.getLatLng();
     state.lat = +p.lat.toFixed(4); state.lon = +p.lng.toFixed(4);
     state.name = `${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}`;
-    marker.setPopupContent(`<b>${state.name}</b><br><small>${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}</small>`);
+    marker.setPopupContent(popupHtml(state.name, state.lat, state.lon));
     loadForecast();
   });
   map.on("click", onMapClick);
@@ -1387,10 +1462,12 @@ function initMap() {
 
 async function loadRadar() {
   const status = el("radar-status");
+  const token = reqToken; // stale guard: a fast place switch must not let the old radar win
   try {
     const r = await fetch("/radar");
     if (!r.ok) throw new Error(`radar ${r.status}`);
     const d = await r.json();
+    if (token !== reqToken) return;
     const all = [...(d.radar?.past || []), ...(d.radar?.nowcast || [])];
     if (!all.length) {
       status.textContent = tr("radar_nodata");
@@ -1428,6 +1505,7 @@ async function loadRadar() {
       slider.min = 0;
       slider.step = 1;
       slider.value = radarFrames.length - 1;
+      slider.disabled = false;
     }
     if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
     // Warm the model tiles (server + browser cache) so the first playback
@@ -1520,13 +1598,17 @@ function toggleRadarPlay() {
 }
 
 /* Clicking anywhere on the map loads the forecast for that precise point:
-   a station street corner, a valley, the coast — wherever you point. */
+   a station street corner, a valley, the coast — wherever you point.
+   The previous toponym is kept in the marker tooltip history (title) so a
+   tap never silently destroys the place name; drag stays the precise tool. */
 async function onMapClick(e) {
   const lat = +e.latlng.lat.toFixed(4);
   const lon = +e.latlng.lng.toFixed(4);
+  const prev = state.name;
   state.lat = lat;
   state.lon = lon;
   state.name = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  if (marker) marker.options.prevName = prev;
   await loadForecast();
 }
 
@@ -1535,7 +1617,7 @@ function centerMapOn(lat, lon, name) {
   map.setView([lat, lon], 9);
   if (marker) {
     marker.setLatLng([lat, lon]);
-    marker.setPopupContent(`<b>${name}</b>`);
+    marker.setPopupContent(popupHtml(name, lat, lon));
   }
 }
 
@@ -1564,18 +1646,18 @@ function applyMapLayer() {
     return;
   }
   if (mapLayer === "streets") {
-    el("radar-status").textContent = "plan (rues)";
+    el("radar-status").textContent = tr("map_streets");
     const lg = document.getElementById("map-legend");
     if (lg) lg.hidden = true;
     return;
   }
   const layerLabels = {
-    temp: "température (modèle)",
-    precip: "précipitation (modèle)",
-    uv: "indice UV (modèle)",
-    humidity: "humidité (modèle)",
-    cloud: "nébulosité (modèle)",
-    pressure: "pression (modèle)",
+    temp: `${tr("layer_temp")} (modèle)`,
+    precip: `${tr("layer_precip")} (modèle)`,
+    uv: `${tr("layer_uv")} (modèle)`,
+    humidity: `${tr("layer_humidity")} (modèle)`,
+    cloud: `${tr("layer_cloud")} (modèle)`,
+    pressure: `${tr("layer_pressure")} (modèle)`,
   };
   const label = layerLabels[mapLayer] || mapLayer;
   el("radar-status").textContent = label;
@@ -1613,13 +1695,18 @@ function windColor(kmh) {
   return "#ef4444";
 }
 
+let windSeq = 0;
 async function refreshWindArrows() {
   if (!map || !el("wind-toggle").checked) return;
+  const seq = ++windSeq; // last response wins: pans fire overlapping fetches
+  const placeToken = reqToken;
   const b = map.getBounds();
+  const url = `/wind-grid?lat_n=${b.getNorth().toFixed(3)}&lon_w=${b.getWest().toFixed(3)}&lat_s=${b.getSouth().toFixed(3)}&lon_e=${b.getEast().toFixed(3)}&n=6`;
   try {
-    const r = await fetch(`/wind-grid?lat_n=${b.getNorth().toFixed(3)}&lon_w=${b.getWest().toFixed(3)}&lat_s=${b.getSouth().toFixed(3)}&lon_e=${b.getEast().toFixed(3)}&n=6`);
+    const r = await fetch(url);
     if (!r.ok) return;
     const { points } = await r.json();
+    if (seq !== windSeq || placeToken !== reqToken) return;
     if (windLayer) map.removeLayer(windLayer);
     windLayer = L.layerGroup();
     for (const p of points) {
@@ -1660,6 +1747,14 @@ $("#radar-slider").addEventListener("input", (e) => {
 });
 
 /* Boot */
+(function markRestoredControls() {
+  document.querySelectorAll("#range-seg .seg__btn").forEach((b) => {
+    b.classList.toggle("seg__btn--active", parseInt(b.dataset.hours, 10) === state.hours);
+  });
+  document.querySelectorAll("#graph-tabs .graph-tab").forEach((b) => {
+    b.classList.toggle("graph-tab--active", b.dataset.graph === state.graph);
+  });
+})();
 loadForecast();
 renderFavorites();
 // The map and radar initialize inside render(), once `#content` is visible:

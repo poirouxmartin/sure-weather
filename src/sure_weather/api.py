@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import html
+import ipaddress
+import os
 import threading
+import time
+import urllib.parse
 from datetime import datetime, timezone
 import base64
 import json
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +27,14 @@ from .tiles import render_tile, wind_grid as render_wind_grid
 
 app = FastAPI(title="Sure Weather", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+# /now is consumed cross-origin by Shortcuts/KWGT widgets: allow browsers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+    max_age=3600,
+)
 _config = load_config()
 _storage = Storage(_config.db_path)
 _service = WeatherService(_storage, _config)
@@ -39,7 +53,9 @@ def _generate_vapid_keys() -> dict:
     pub = priv.public_key()
     priv_bytes = priv.private_numbers().private_value.to_bytes(32, "big")
     pub_nums = pub.public_numbers()
-    pub_bytes = b"\x04" + pub_nums.x.to_bytes(32, "big") + pub_nums.y.to_bytes(32, "big")
+    pub_bytes = (
+        b"\x04" + pub_nums.x.to_bytes(32, "big") + pub_nums.y.to_bytes(32, "big")
+    )
     return {"public": _b64url(pub_bytes), "private": _b64url(priv_bytes)}
 
 
@@ -54,9 +70,65 @@ def _get_vapid_keys() -> dict:
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(keys))
+        try:
+            os.chmod(f, 0o600)
+        except Exception:
+            pass
     except Exception:
         pass
     return keys
+
+
+# ---- Admin gate + endpoint validation for push (anti-spam / anti-SSRF) ----
+def _require_admin(token: str | None) -> None:
+    expected = os.environ.get("SURE_WEATHER_ADMIN_TOKEN", "")
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="admin token required")
+
+
+def _validate_push_endpoint(endpoint: str) -> None:
+    """Reject non-HTTPS, oversized, or private-network push endpoints."""
+    if not endpoint or len(endpoint) > 2048:
+        raise HTTPException(status_code=422, detail="invalid endpoint")
+    try:
+        u = urllib.parse.urlparse(endpoint)
+    except Exception:
+        raise HTTPException(status_code=422, detail="invalid endpoint")
+    if u.scheme != "https" or not u.hostname:
+        raise HTTPException(status_code=422, detail="endpoint must be https")
+    try:
+        ip = ipaddress.ip_address(u.hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise HTTPException(status_code=422, detail="private endpoint refused")
+    except ValueError:
+        pass  # hostname, not a literal IP: allowed (push services)
+
+
+# ---- Lightweight per-IP rate limiting for open proxies ----
+_RATE_BUCKETS: dict[str, list[float]] = {}
+_RATE_LOCK = threading.Lock()
+_GEOCODE_CACHE: dict[tuple[str, int], tuple[float, list]] = {}
+
+
+def _rate_limit(key: str, limit: int = 30, window_s: float = 60.0) -> None:
+    now = time.time()
+    with _RATE_LOCK:
+        hits = [t for t in _RATE_BUCKETS.get(key, []) if now - t < window_s]
+        if len(hits) >= limit:
+            raise HTTPException(status_code=429, detail="rate limited")
+        hits.append(now)
+        _RATE_BUCKETS[key] = hits[-limit:]
+
+
+def _rate_limit_by_ip(
+    request, endpoint: str, limit: int = 30, window_s: float = 60.0
+) -> None:
+    """Per-IP sliding-window limiter for open-proxy routes (geocode/radar/tiles)."""
+    try:
+        ip = request.client.host if request and request.client else "unknown"
+    except Exception:
+        ip = "unknown"
+    _rate_limit(f"{endpoint}:{ip}", limit, window_s)
 
 
 class PushSubscription(BaseModel):
@@ -66,8 +138,11 @@ class PushSubscription(BaseModel):
     lon: float | None = None
 
 
-@app.on_event("startup")
-def _warm_stats_cache() -> None:
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
     """Precompute calibration stats in the background at boot.
 
     The first forecast after a restart would otherwise pay the residual
@@ -84,6 +159,10 @@ def _warm_stats_cache() -> None:
             pass
 
     threading.Thread(target=_warm, daemon=True).start()
+    yield
+
+
+app.router.lifespan_context = _lifespan
 
 
 @app.get("/health")
@@ -101,7 +180,11 @@ def weather(
 
 
 @app.get("/geocode")
-def geocode(q: str = Query(..., min_length=2), limit: int = Query(5, ge=1, le=10)) -> dict:
+def geocode(
+    request: Request,
+    q: str = Query(..., min_length=2, max_length=200),
+    limit: int = Query(5, ge=1, le=10),
+) -> dict:
     """Forward an address/city query to Nominatim (OpenStreetMap).
 
     Open-Meteo's geocoder only knows cities; an exact street address needs a
@@ -111,6 +194,13 @@ def geocode(q: str = Query(..., min_length=2), limit: int = Query(5, ge=1, le=10
     precise lat/lon, which the weather service then uses to target the closest
     local METAR stations.
     """
+    _rate_limit_by_ip(request, "geocode", limit=30)
+    # Small in-process cache: repeated district/street searches reuse upstream.
+    cache_key = (q.strip().lower(), limit)
+    now = time.time()
+    hit = _GEOCODE_CACHE.get(cache_key)
+    if hit and now - hit[0] < 3600:
+        return {"results": hit[1]}
     try:
         r = get_client().get(
             "https://nominatim.openstreetmap.org/search",
@@ -137,17 +227,21 @@ def geocode(q: str = Query(..., min_length=2), limit: int = Query(5, ge=1, le=10
         }
         for item in r.json()
     ]
+    _GEOCODE_CACHE[cache_key] = (time.time(), results)
+    if len(_GEOCODE_CACHE) > 256:
+        _GEOCODE_CACHE.pop(next(iter(_GEOCODE_CACHE)))
     return {"results": results}
 
 
 @app.get("/radar")
-def radar() -> dict:
+def radar(request: Request) -> dict:
     """Proxy to RainViewer's radar frame index (past + nowcast, free, keyless).
 
     The frames give 256px XYZ tile URLs for precipitation radar; nowcast
     extends the last measured frame ~30 min ahead. The client animates them
     over a map. Proxying avoids CORS and keeps the tile host configurable.
     """
+    _rate_limit_by_ip(request, "radar", limit=30)
     try:
         r = get_client().get(
             "https://api.rainviewer.com/public/weather-maps.json", timeout=30
@@ -160,6 +254,7 @@ def radar() -> dict:
 
 @app.get("/tile/{layer}/{z}/{x}/{y}.png")
 def tile(
+    request: Request,
     layer: str,
     z: int,
     x: int,
@@ -186,6 +281,7 @@ def tile(
     n = 1 << z
     if not (0 <= x < n and 0 <= y < n):
         raise HTTPException(status_code=404, detail="tile out of range")
+    _rate_limit_by_ip(request, "tile", limit=120, window_s=60.0)
     data = render_tile(layer, z, x, y, hour_offset=h)
     if data is None:
         raise HTTPException(status_code=502, detail="tile upstream unavailable")
@@ -234,7 +330,30 @@ def mini() -> FileResponse:
 
 # ---- Widget feed (home-screen widgets via Shortcuts iOS / KWGT Android) ----
 
-def _sky_key(row: dict, hour: int) -> str:
+
+def _is_night_sun(sun: dict | None, at: datetime | None = None) -> bool | None:
+    """True/False from real sunrise/sunset when available, else None (unknown)."""
+    try:
+        daily = (sun or {}).get("daily") or {}
+        sr_list = daily.get("sunrise") or []
+        ss_list = daily.get("sunset") or []
+        if not sr_list or not ss_list:
+            return None
+        at = at or datetime.now(timezone.utc)
+        t = at.timestamp()
+        for sr_iso, ss_iso in zip(sr_list, ss_list):
+            sr = datetime.fromisoformat(sr_iso).timestamp()
+            ss = datetime.fromisoformat(ss_iso).timestamp()
+            if t < sr:
+                return True
+            if t < ss:
+                return False
+        return True
+    except Exception:
+        return None
+
+
+def _sky_key(row: dict, hour: int, sun: dict | None = None) -> str:
     rain = row.get("precipitation", {}).get("value", 0) or 0
     prob = row.get("precipitation_probability", {}).get("value", 0) or 0
     cloud = row.get("cloud_cover", {}).get("value", 0) or 0
@@ -242,9 +361,16 @@ def _sky_key(row: dict, hour: int) -> str:
         return "storm"
     if prob >= 70 or rain > 0.3:
         return "rain"
+    if cloud >= 70:
+        night = _is_night_sun(sun)
+        return "night" if night else "cloud" if night is False else "cloud"
     if cloud >= 30:
-        return "partly"
-    return "night" if (hour < 6 or hour >= 21) else "day"
+        night = _is_night_sun(sun)
+        return "night" if night else "partly" if night is False else "partly"
+    night = _is_night_sun(sun)
+    if night is None:
+        return "night" if (hour < 6 or hour >= 21) else "day"
+    return "night" if night else "day"
 
 
 def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
@@ -262,13 +388,12 @@ def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
     gust = cur.get("wind_gusts_10m", {})
     temps = [i["value"] for i in data["forecast"] if i["variable"] == "temperature_2m"]
     rain_mm = sum(
-        (i["value"] or 0)
-        for i in data["forecast"]
-        if i["variable"] == "precipitation"
+        (i["value"] or 0) for i in data["forecast"] if i["variable"] == "precipitation"
     )
     contributors = {p for i in data["forecast"] for p in i.get("contributors", [])}
     stations = {p for p in contributors if p.startswith("metar_")}
     hour = datetime.now(timezone.utc).hour
+    sun = data.get("sun")
     summary = {
         "location": {"lat": lat, "lon": lon},
         "cell": data["cell"],
@@ -284,7 +409,7 @@ def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
         "gust_kmh": round(gust["value"] * 3.6) if gust else None,
         "tmax": round(max(temps), 1) if temps else None,
         "tmin": round(min(temps), 1) if temps else None,
-        "sky": _sky_key(cur, hour),
+        "sky": _sky_key(cur, hour, sun),
         "stations": len(stations),
         "models": len(contributors) - len(stations),
     }
@@ -293,6 +418,7 @@ def _now_summary(lat: float, lon: float, hours: int = 24) -> dict:
 
 @app.get("/wind-grid")
 def wind_grid_endpoint(
+    request: Request,
     lat_n: float = Query(..., ge=-90, le=90),
     lon_w: float = Query(..., ge=-180, le=180),
     lat_s: float = Query(..., ge=-90, le=90),
@@ -304,6 +430,7 @@ def wind_grid_endpoint(
     The client renders rotating arrows colored by speed on top of the radar.
     Cached like tiles, so map panning reuses the same upstream request.
     """
+    _rate_limit_by_ip(request, "wind-grid", limit=60)
     if lat_s >= lat_n or lon_e <= lon_w:
         raise HTTPException(status_code=422, detail="invalid bounds")
     points = render_wind_grid(lat_n, lon_w, lat_s, lon_e, n)
@@ -322,7 +449,12 @@ def push_key() -> dict:
 def push_subscribe(sub: PushSubscription) -> dict:
     if not sub.endpoint or not sub.keys.get("p256dh") or not sub.keys.get("auth"):
         raise HTTPException(status_code=422, detail="invalid subscription")
-    _storage.add_push_subscription(sub.endpoint, sub.keys["p256dh"], sub.keys["auth"], sub.lat, sub.lon)
+    _validate_push_endpoint(sub.endpoint)
+    if len(sub.keys.get("p256dh", "")) > 512 or len(sub.keys.get("auth", "")) > 256:
+        raise HTTPException(status_code=422, detail="invalid subscription keys")
+    _storage.add_push_subscription(
+        sub.endpoint, sub.keys["p256dh"], sub.keys["auth"], sub.lat, sub.lon
+    )
     return {"ok": True}
 
 
@@ -333,12 +465,28 @@ def push_unsubscribe(endpoint: str = Query(...)) -> dict:
 
 
 @app.post("/push/test")
-def push_test(lat: float | None = Query(None), lon: float | None = Query(None)) -> dict:
-    """Send a test push to all (or location-filtered) subscribers."""
+def push_test(
+    request: Request,
+    lat: float | None = Query(None),
+    lon: float | None = Query(None),
+    token: str | None = Query(None),
+) -> dict:
+    """Send a test push to all (or location-filtered) subscribers.
+
+    Admin-gated: requires ?token=SURE_WEATHER_ADMIN_TOKEN, else 403.
+    """
+    _require_admin(token)
+    _rate_limit_by_ip(request, "push-test", limit=5, window_s=300.0)
     subs = _storage.list_push_subscriptions()
     if lat is not None and lon is not None:
         # rough filter: subscribers near the requested location
-        subs = [s for s in subs if s["lat"] is not None and abs(s["lat"] - lat) < 1.5 and abs(s["lon"] - lon) < 1.5]
+        subs = [
+            s
+            for s in subs
+            if s["lat"] is not None
+            and abs(s["lat"] - lat) < 1.5
+            and abs(s["lon"] - lon) < 1.5
+        ]
     if not subs:
         raise HTTPException(status_code=404, detail="no subscribers")
     keys = _get_vapid_keys()
@@ -348,8 +496,17 @@ def push_test(lat: float | None = Query(None), lon: float | None = Query(None)) 
     for s in subs:
         try:
             webpush(
-                subscription_info={"endpoint": s["endpoint"], "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}},
-                data=json.dumps({"title": "Sure Weather — test", "body": "Pluie prévue dans l'heure ☔", "url": f"/?lat={lat or 48.85}&lon={lon or 2.35}"}),
+                subscription_info={
+                    "endpoint": s["endpoint"],
+                    "keys": {"p256dh": s["p256dh"], "auth": s["auth"]},
+                },
+                data=json.dumps(
+                    {
+                        "title": "Sure Weather — test",
+                        "body": "Pluie prévue dans l'heure ☔",
+                        "url": f"/?lat={lat or 48.85}&lon={lon or 2.35}",
+                    }
+                ),
                 vapid_private_key=keys["private"],
                 vapid_claims={"sub": "mailto:sure-weather@example.com"},
             )
@@ -394,7 +551,8 @@ def widget_svg(
     s = _now_summary(lat, lon)
     top, bottom = _SKY_COLORS.get(s["sky"], _SKY_COLORS["day"])
     icon = _SKY_ICONS.get(s["sky"], "☀️")
-    label = name or f"{lat:.4f}, {lon:.4f}"
+    # Escape user-controlled label: raw interpolation would allow SVG/XML XSS.
+    label = html.escape((name or f"{lat:.4f}, {lon:.4f}")[:34])
     conf = round((s["confidence"] or 0) * 100)
     sure_txt = "sûr" if s["sure"] else f"conf. {conf}%"
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="400" height="220" viewBox="0 0 400 220">
@@ -405,11 +563,11 @@ def widget_svg(
     </linearGradient>
   </defs>
   <rect width="400" height="220" rx="24" fill="url(#bg)"/>
-  <text x="24" y="40" font-family="system-ui,sans-serif" font-size="17" font-weight="700" fill="#ffffff" opacity=".92">{label[:34]}</text>
-  <text x="24" y="150" font-family="system-ui,sans-serif" font-size="64" font-weight="800" fill="#ffffff">{s["temp"] is not None and f'{s["temp"]:.0f}°' or '—'}</text>
+  <text x="24" y="40" font-family="system-ui,sans-serif" font-size="17" font-weight="700" fill="#ffffff" opacity=".92">{label}</text>
+  <text x="24" y="150" font-family="system-ui,sans-serif" font-size="64" font-weight="800" fill="#ffffff">{s["temp"] is not None and f"{s['temp']:.0f}°" or "—"}</text>
   <text x="250" y="86" font-family="system-ui,sans-serif" font-size="44">{icon}</text>
-  <text x="24" y="182" font-family="system-ui,sans-serif" font-size="15" fill="#ffffff" opacity=".9">↑{s["tmax"]}° ↓{s["tmin"]}° · ☔ {s["rain_probability"] is not None and f'{s["rain_probability"]:.0f}%' or '—'}</text>
-  <text x="24" y="204" font-family="system-ui,sans-serif" font-size="12" fill="#ffffff" opacity=".75">{s["wind_kmh"] or '—'} km/h · {sure_txt} · {s["stations"]} station{s["stations"] > 1 and 's' or ''}</text>
+  <text x="24" y="182" font-family="system-ui,sans-serif" font-size="15" fill="#ffffff" opacity=".9">↑{s["tmax"]}° ↓{s["tmin"]}° · ☔ {s["rain_probability"] is not None and f"{s['rain_probability']:.0f}%" or "—"}</text>
+  <text x="24" y="204" font-family="system-ui,sans-serif" font-size="12" fill="#ffffff" opacity=".75">{s["wind_kmh"] or "—"} km/h · {sure_txt} · {s["stations"]} station{s["stations"] > 1 and "s" or ""}</text>
 </svg>"""
     return Response(
         content=svg,
@@ -420,9 +578,30 @@ def widget_svg(
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
 def manifest() -> FileResponse:
-    return FileResponse(_web_dir / "manifest.webmanifest", media_type="application/manifest+json")
+    return FileResponse(
+        _web_dir / "manifest.webmanifest", media_type="application/manifest+json"
+    )
 
 
 @app.get("/sw.js", include_in_schema=False)
 def service_worker() -> FileResponse:
     return FileResponse(_web_dir / "sw.js", media_type="application/javascript")
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    """Content-Security-Policy + no-cache for the service worker script."""
+    response = await call_next(request)
+    # Leaflet CDN is pinned with SRI in index.html; allow it + fonts + OSM/radar tiles.
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https://tile.openstreetmap.org https://*.rainviewer.com; "
+        "connect-src 'self' https://geocoding-api.open-meteo.com;"
+    )
+    response.headers.setdefault("Content-Security-Policy", csp)
+    if request.url.path == "/sw.js":
+        response.headers["Cache-Control"] = "no-cache"
+    return response

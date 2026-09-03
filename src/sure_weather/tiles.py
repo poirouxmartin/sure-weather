@@ -14,6 +14,7 @@ import numpy as np
 
 # ---- Minimal PNG encoder (stdlib + numpy, no Pillow) ----
 
+
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
     return (
         struct.pack(">I", len(data))
@@ -41,6 +42,7 @@ def encode_png_rgba(pixels: np.ndarray) -> bytes:
 
 # ---- Slippy map geometry ----
 
+
 def tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     """Return (lon_west, lat_south, lon_east, lat_north) for a slippy tile."""
     n = 2.0**z
@@ -52,6 +54,7 @@ def tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
 
 
 # ---- Colormaps ----
+
 
 def _build_lut(stops: list[tuple[float, tuple[int, int, int, int]]]) -> np.ndarray:
     """Build a (256, 4) uint8 RGBA LUT from (value, rgba) stops."""
@@ -129,12 +132,16 @@ _PRESSURE_LUT = _build_lut(_PRESSURE_STOPS)
 _PRESSURE_VMIN, _PRESSURE_VMAX = 980.0, 1030.0
 
 
-def _apply_lut(vals: np.ndarray, lut: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+def _apply_lut(
+    vals: np.ndarray, lut: np.ndarray, vmin: float, vmax: float
+) -> np.ndarray:
     """Map a (H, W) float array to an (H, W, 4) RGBA overlay."""
     h, w = vals.shape
     idx = np.full((h, w), 0, dtype=np.uint8)
     finite = np.isfinite(vals)
-    idx[finite] = np.clip((vals[finite] - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(np.uint8)
+    idx[finite] = np.clip((vals[finite] - vmin) / (vmax - vmin) * 255.0, 0, 255).astype(
+        np.uint8
+    )
     rgba = lut[idx]
     rgba[~finite, 3] = 0  # no data → fully transparent
     return rgba
@@ -171,11 +178,13 @@ _TILE_SIZE = 256
 _CACHE_TTL_S = 10 * 60
 _CACHE_MAX = 256
 
-_tile_cache: dict[tuple[str, int, int, int], tuple[float, bytes]] = {}
+# Keys are 5-tuples (layer, z, x, y, h) for tiles and 6-tuples for
+# wind-grids; values are bytes (PNG) or JSON str respectively.
+_tile_cache: dict[tuple, tuple[float, bytes | str]] = {}
 _cache_lock = threading.Lock()
 
 
-def _cache_get(key: tuple[str, int, int, int]) -> bytes | None:
+def _cache_get(key: tuple) -> bytes | str | None:
     now = time.time()
     with _cache_lock:
         hit = _tile_cache.get(key)
@@ -188,7 +197,7 @@ def _cache_get(key: tuple[str, int, int, int]) -> bytes | None:
         return data
 
 
-def _cache_put(key: tuple[str, int, int, int], data: bytes) -> None:
+def _cache_put(key: tuple, data: bytes | str) -> None:
     with _cache_lock:
         if len(_tile_cache) >= _CACHE_MAX:
             oldest = min(_tile_cache, key=lambda k: _tile_cache[k][0])
@@ -213,7 +222,14 @@ def wind_grid(
     Powers the map's wind-arrow overlay: one multi-location request for the
     whole viewport, cached briefly so panning doesn't hammer the API.
     """
-    key = ("windgrid", round(lat_n, 2), round(lon_w, 2), round(lat_s, 2), round(lon_e, 2), n)
+    key = (
+        "windgrid",
+        round(lat_n, 2),
+        round(lon_w, 2),
+        round(lat_s, 2),
+        round(lon_e, 2),
+        n,
+    )
     cached = _cache_get(key)
     if cached is not None:
         return json.loads(cached)
@@ -242,12 +258,14 @@ def wind_grid(
         deg = cur.get("wind_direction_10m")
         if speed is None or deg is None:
             continue
-        points.append({
-            "lat": round(float(lats[i // n]), 4),
-            "lon": round(float(lons[i % n]), 4),
-            "kmh": round(speed * 3.6),
-            "deg": round(float(deg)),
-        })
+        points.append(
+            {
+                "lat": round(float(lats[i // n]), 4),
+                "lon": round(float(lons[i % n]), 4),
+                "kmh": round(speed * 3.6),
+                "deg": round(float(deg)),
+            }
+        )
     data = json.dumps(points)
     _cache_put(key, data)
     return points
@@ -286,7 +304,9 @@ def _build_request_params(
     return params, "now"
 
 
-def _sample_to_grid(layer: str, samples: list[dict], hour_offset: int = 0, z: int = 8) -> np.ndarray:
+def _sample_to_grid(
+    layer: str, samples: list[dict], hour_offset: int = 0, z: int = 8
+) -> np.ndarray:
     """Map the flat list of per-location responses back to a value grid."""
     n = _samples_for_zoom(z)
     if hour_offset:
@@ -356,7 +376,10 @@ def render_tile(
         r.raise_for_status()
     except httpx.HTTPError:
         return None
-    samples = r.json()
+    try:
+        samples = r.json()
+    except ValueError:
+        return None
     if not isinstance(samples, list):
         return None
     grid = _sample_to_grid(layer, samples, hour_offset=hour_offset, z=z)

@@ -1,12 +1,14 @@
 ﻿/* Sure Weather service worker.
    - App shell: precached, versioned; network-first so deploys always land.
-   - /weather: network-first, cached fallback for offline.
+   - /weather: network-first with put + cached fallback for offline.
    - /tile + /wind-grid: cache-first runtime cache (offline map, upstream
      hiccups), trimmed to a bounded number of entries. */
-const CACHE = "sure-weather-v9";
+const CACHE = "sure-weather-v10";
 const RUNTIME = "sure-weather-tiles-v1";
 const RUNTIME_MAX = 600;
-const APP_SHELL = ["/", "/static/app.css", "/static/app.js", "/static/i18n.js", "/static/icon.svg"];
+const APP_SHELL = ["/", "/mini", "/static/app.css", "/static/app.js", "/static/i18n.js", "/static/icon.svg",
+  "/static/icon-192.png", "/static/icon-512.png", "/static/icon-maskable-192.png", "/static/icon-maskable-512.png",
+  "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -44,6 +46,21 @@ async function cacheFirst(e) {
   return resp;
 }
 
+async function weatherFirst(e) {
+  try {
+    const resp = await fetch(e.request);
+    if (resp.ok) {
+      const cache = await caches.open(CACHE);
+      await cache.put(e.request, resp.clone());
+    }
+    return resp;
+  } catch {
+    const hit = await caches.match(e.request);
+    if (hit) return hit;
+    throw new Error("offline");
+  }
+}
+
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.pathname.startsWith("/tile/") || url.pathname === "/wind-grid") {
@@ -51,7 +68,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (url.pathname.startsWith("/weather")) {
-    e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+    e.respondWith(weatherFirst(e));
     return;
   }
   if (e.request.mode === "navigate") {

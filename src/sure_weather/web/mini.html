@@ -48,6 +48,10 @@
     const ICONS = { day: "☀️", night: "🌙", rain: "🌧", storm: "⛈", partly: "⛅" };
     async function load() {
       try {
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          document.getElementById("name").textContent = "Lieu manquant (?lat=&lon=)";
+          return;
+        }
         const r = await fetch(`/now?lat=${lat}&lon=${lon}`);
         if (!r.ok) throw 0;
         const s = await r.json();

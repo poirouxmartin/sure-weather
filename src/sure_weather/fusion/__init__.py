@@ -49,7 +49,7 @@ _VARIABLE_BOUNDS = {
     "wind_speed_10m": (0.0, None),
     "wind_gusts_10m": (0.0, None),
     "wind_direction_10m": (0.0, 360.0),
-    "uv_index": (0.0, 12.0),
+    "uv_index": (0.0, None),  # no upper clip: 11+ and tropical extremes exist
     "pressure_msl": (None, None),
     "visibility": (0.0, None),
 }
@@ -116,16 +116,21 @@ def spatial_stats(
     lats = np.array([c.lat for c in cells])
     lons = np.array([c.lon for c in cells])
 
-    # Pairwise great-circle distances (n x n), then Gaussian weights.
-    p1 = np.radians(lats)[:, None]
-    p2 = np.radians(lats)[None, :]
-    dphi = np.radians(lats)[None, :] - np.radians(lats)[:, None]
-    dlmb = np.radians(lons)[None, :] - np.radians(lons)[:, None]
-    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2) ** 2
-    dist_km = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
-    W = np.exp(-(dist_km**2) / (2.0 * sigma_km * sigma_km))
-    np.fill_diagonal(W, 0.0)  # a cell never borrows from itself here
-    W[W < 1e-3] = 0.0
+    # No n x n matrix: weights are computed per target cell against the
+    # cells that actually have stats (O(n) memory, no 800 MB blowup at 10k
+    # cells). Gaussian kernel with `sigma_km` range; <1e-3 truncated.
+    rlats, rlons = np.radians(lats), np.radians(lons)
+    cos_lat = np.cos(rlats)
+
+    def _weights_for(t: int) -> np.ndarray:
+        dphi = rlats - rlats[t]
+        dlmb = rlons - rlons[t]
+        a = np.sin(dphi / 2) ** 2 + cos_lat[t] * cos_lat * np.sin(dlmb / 2) ** 2
+        dist_km = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+        w = np.exp(-(dist_km**2) / (2.0 * sigma_km * sigma_km))
+        w[t] = 0.0  # a cell never borrows from itself here
+        w[w < 1e-3] = 0.0
+        return w
 
     # Group stats by (provider, variable, horizon) across cells.
     keys_by_group: dict[tuple[str, str, float], list[tuple[str, ProviderStat]]] = {}
@@ -154,8 +159,9 @@ def spatial_stats(
 
         # Cells that need a spatial prior: no own stat, or too few samples.
         targets = np.where(~solid)[0]
+        has_idx = np.where(has)[0]
         for t in targets:
-            w = W[t] * has  # only cells that have a stat contribute
+            w = _weights_for(t) * has  # only cells that have a stat contribute
             total = w.sum()
             if total <= 0:
                 continue
@@ -169,7 +175,7 @@ def spatial_stats(
                 bias = own_w * b[t] + (1 - own_w) * bias
                 rmse = math.sqrt(own_w * r[t] ** 2 + (1 - own_w) * rmse**2)
                 samples = int(s[t] + samples)
-            src = [i for i in range(n) if has[i]]
+            src = has_idx.tolist()
             out[(provider, keys[t], variable, horizon)] = ProviderStat(
                 provider=provider,
                 cell_key=keys[t],
@@ -261,7 +267,11 @@ def _fuse_one(
     cell_key = samples[0].cell_key
     now = now or datetime.now(timezone.utc)
 
-    pairs: list[tuple[str, float, float]] = []  # (provider, raw_value, weight)
+    # (provider, raw_value, weight, bucket, cell_key): bucket is per-sample
+    # because latest_forecasts keeps the best run *per provider* (issued_at
+    # differs between providers — a shared samples[0].issued_at bucket would
+    # misattribute calibration to fresh/stale runs alike).
+    pairs: list[tuple[str, float, float, float, str]] = []
     for s in samples:
         if s.variable != variable or s.valid_at != valid_at:
             continue
@@ -269,7 +279,7 @@ def _fuse_one(
         stat = stats.get((s.provider, s.cell_key, variable, bucket))
         kind = kinds.get(s.provider, "model")
         w = base_weight(stat, kind, bucket, now)
-        pairs.append((s.provider, s.value, w))
+        pairs.append((s.provider, s.value, w, bucket, s.cell_key))
 
     if not pairs:
         return None
@@ -282,10 +292,25 @@ def _fuse_one(
     # Angles wrap around, so the linear MAD gate would wrongly reject north
     # readings near 350/10 degrees — directions skip this pass.
     if not is_direction:
-        med = _weighted_median(raw, weights) if weights.sum() > 0 else float(np.median(raw))
-        spread = _mad(raw) or float(np.std(raw)) or 1.0
+        med = (
+            _weighted_median(raw, weights)
+            if weights.sum() > 0
+            else float(np.median(raw))
+        )
+        mad = _mad(raw)
+        if mad <= 1e-9:
+            # Degenerate spread (all agree or single value): std would be
+            # inflated by the outlier itself. Gate on the variable tolerance.
+            spread = _VARIABLE_TOLERANCE.get(variable, 1.5)
+        else:
+            spread = mad
         dev = np.abs(raw - med)
         keep = dev <= 3.0 * spread  # robust outlier gate: 3*MAD keeps honest spread
+        if keep.sum() == 1 and len(raw) >= 2:
+            # Never silently keep a single inlier: keep the 2 closest instead.
+            order = np.argsort(dev)
+            keep = np.zeros_like(keep)
+            keep[order[:2]] = True
         if 2 <= keep.sum() < len(raw):
             raw = raw[keep]
             weights = weights[keep]
@@ -300,9 +325,8 @@ def _fuse_one(
     else:
         corrected: list[float] = []
         any_corrected = False
-        for provider, value, w in pairs:
-            bucket = horizon_bucket(valid_at, samples[0].issued_at)
-            stat = stats.get((provider, cell_key, variable, bucket))
+        for provider, value, w, bucket, pcell in pairs:
+            stat = stats.get((provider, pcell, variable, bucket))
             if stat and stat.samples >= 3:
                 corrected.append(value - stat.bias)
                 any_corrected = True
@@ -343,9 +367,8 @@ def _fuse_one(
     # (sqrt(rmse^2 - bias^2)): the systematic part was already removed by the
     # bias correction, so it must not count twice.
     variances: list[float] = []
-    for provider, _v, _w in pairs:
-        bucket = horizon_bucket(valid_at, samples[0].issued_at)
-        stat = stats.get((provider, cell_key, variable, bucket))
+    for provider, _v, _w, bucket, pcell in pairs:
+        stat = stats.get((provider, pcell, variable, bucket))
         if stat and stat.samples >= 3:
             noise = math.sqrt(max(stat.rmse * stat.rmse - stat.bias * stat.bias, 0.0))
             noise = max(noise, 1e-6)
@@ -362,10 +385,9 @@ def _fuse_one(
 
     # Calibrated only if at least one provider has learned stats for this
     # (cell, variable, horizon). Without ground truth, confidence is a prior.
-    bucket = horizon_bucket(valid_at, samples[0].issued_at)
     any_learned = False
-    for provider, _, _ in pairs:
-        s = stats.get((provider, cell_key, variable, bucket))
+    for provider, _, _, bucket, pcell in pairs:
+        s = stats.get((provider, pcell, variable, bucket))
         if s is not None and s.samples >= 3:
             any_learned = True
             break
@@ -378,7 +400,7 @@ def _fuse_one(
         dispersion=residual_spread,
         confidence=confidence,
         calibrated=any_learned,
-        contributors=tuple((p, v, w) for (p, v, w) in pairs),
+        contributors=tuple((p, v, w) for (p, v, w, _, _) in pairs),
     )
 
 

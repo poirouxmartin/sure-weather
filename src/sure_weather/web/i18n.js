@@ -67,6 +67,16 @@ const I18N = {
     st_one: "1 station météo locale en direct",
     st_many: "{n} stations météo locales en direct",
     conf_na: "non cal.",
+    my_position: "Ma position",
+    conf_avg: "moyenne {m} % (calibrée)",
+    conf_sure_share: "{p} % · {s} % sûres",
+    sure_tip: "{s} % des valeurs sûres · confiance moyenne {a} % sur {h}",
+    sources_title: "Détail des sources & calcul",
+    sources_hint: "Températures brutes par source à l'échéance la plus proche, biais corrigé, et moyenne pondérée calibrée (= notre prévision).",
+    th_src: "Source", th_raw: "Brut", th_bias: "Biais", th_corr: "Corrigé", th_weight: "Poids", th_share: "Part",
+    consensus_row: "→ Notre prévision",
+    map_streets: "plan (rues)",
+    tz_note: "heure locale",
     sources: "Sources : Open-Meteo ({models}) · {st} stations METAR · radar RainViewer · © OpenStreetMap · maj {u}",
     sources_full: "Modèles et stations",
     var_temp: "Température", var_dew: "Point de rosée", var_hum: "Humidité",
@@ -155,6 +165,16 @@ const I18N = {
     st_one: "1 live local weather station",
     st_many: "{n} live local weather stations",
     conf_na: "uncal.",
+    my_position: "My location",
+    conf_avg: "avg {m}% (calibrated)",
+    conf_sure_share: "{p}% · {s}% sure",
+    sure_tip: "{s}% sure values · avg confidence {a}% over {h}",
+    sources_title: "Sources & calculation detail",
+    sources_hint: "Raw temperatures per source at the nearest hour, corrected bias, and calibrated weighted mean (= our forecast).",
+    th_src: "Source", th_raw: "Raw", th_bias: "Bias", th_corr: "Fixed", th_weight: "Weight", th_share: "Share",
+    consensus_row: "→ Our forecast",
+    map_streets: "street map",
+    tz_note: "local time",
     sources: "Sources: Open-Meteo ({models}) · {st} METAR stations · radar RainViewer · © OpenStreetMap · updated {u}",
     sources_full: "Models and stations",
     var_temp: "Temperature", var_dew: "Dew point", var_hum: "Humidity",
@@ -205,7 +225,13 @@ function setLang(lang) {
   LANG = I18N[lang] ? lang : "fr";
   localStorage.setItem("sure-weather-lang", LANG);
   applyI18n();
-  if (lastMeteo) renderTimeline(lastMeteo.times, lastMeteo.byTime);
+  // Full re-render (not just the timeline): hours/table/verdict/badges/
+  // footer/sources all carry translated strings.
+  if (typeof currentData !== "undefined" && currentData) {
+    render(currentData, (typeof state !== "undefined" && state.hours) || 24);
+  } else if (typeof lastMeteo !== "undefined" && lastMeteo) {
+    renderTimeline(lastMeteo.times, lastMeteo.byTime);
+  }
 }
 
 window.addEventListener("DOMContentLoaded", applyI18n);

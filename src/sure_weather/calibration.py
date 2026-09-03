@@ -63,6 +63,15 @@ def compute_residuals(
         horizon = (f.valid_at - f.issued_at).total_seconds() / 3600.0
         if horizon < 0:
             continue
+        # Wind direction is circular: a linear predicted-observed bias
+        # (350° vs 10° → 340°) is meaningless and would explode rmse, wiping
+        # the provider's weight. Directions still produce residuals (for
+        # dispersion), but with zero bias so only rmse carries the error.
+        # The fusion never bias-corrects directions anyway.
+        if f.variable == "wind_direction_10m":
+            predicted, observed = obs.value, obs.value
+        else:
+            predicted, observed = f.value, obs.value
         residuals.append(
             Residual(
                 provider=f.provider,
@@ -70,8 +79,8 @@ def compute_residuals(
                 variable=f.variable,
                 valid_at=f.valid_at,
                 horizon_h=horizon_bucket(f.valid_at, f.issued_at),
-                predicted=f.value,
-                observed=obs.value,
+                predicted=predicted,
+                observed=observed,
             )
         )
     return residuals
@@ -105,7 +114,7 @@ def learn_stats(residuals: list[Residual]) -> list[ProviderStat]:
 
 def calibration_due(storage: Storage, config: Config) -> bool:
     """True if no calibration has been done in the last interval."""
-    row = storage._conn.execute("SELECT MAX(valid_at) FROM residuals").fetchone()
+    row = storage.locked_fetchone("SELECT MAX(valid_at) FROM residuals")
     if row is None or row[0] is None:
         return True
     latest = _parse_dt(row[0])
