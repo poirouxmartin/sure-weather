@@ -10,11 +10,14 @@ window.SureLocal = (() => {
   const MODELS = [
     "gfs_seamless",
     "ecmwf_ifs025",
+    "ecmwf_aifs025", // AI
+    "gfs_graphcast025", // AI
     "icon_seamless",
     "metno_seamless",
     "gem_seamless",
     "ukmo_seamless",
     "jma_seamless",
+    "bom_access_global",
     "arpege_seamless",
   ];
   const HOURLY = [
@@ -72,6 +75,18 @@ window.SureLocal = (() => {
     const s = a.slice().sort((x, y) => x - y);
     const m = s.length >> 1;
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  /* Weighted median: trusted models (low learned rmse) pull the consensus.
+     Falls back to the plain median with equal weights. */
+  function weightedMedian(vals, weights) {
+    const order = vals.map((v, i) => i).sort((a, b) => vals[a] - vals[b]);
+    const total = weights.reduce((x, y) => x + y, 0);
+    let acc = 0;
+    for (const i of order) {
+      acc += weights[i];
+      if (acc >= total / 2) return vals[i];
+    }
+    return vals[order[order.length - 1]];
   }
   function mad(a, med) {
     return median(a.map((v) => Math.abs(v - med)));
@@ -146,27 +161,32 @@ window.SureLocal = (() => {
     const horizons = {}, byVar = {};
     for (const it of items) {
       if (!SURE_VARS.includes(it.variable)) continue;
-      (byVar[it.variable] = byVar[it.variable] || []).push(it.confidence);
+      (byVar[it.variable] = byVar[it.variable] || []).push(it);
       for (const [lo, hi, label] of bands) {
         if ((lo === 0 && it.horizon_h <= hi) || (lo < it.horizon_h && it.horizon_h <= hi)) {
-          (horizons[label] = horizons[label] || []).push(it.confidence);
+          (horizons[label] = horizons[label] || []).push(it);
           break;
         }
       }
     }
-    // Honest: nothing is learned-calibrated on-device, so sure_share stays
-    // 0 even when models agree (agreement ≠ calibration). The UI then shows
-    // "non cal." ranges instead of fake "sûr" badges.
+    // sure = learned-calibrated AND confident (backend parity). Before any
+    // learning the flags stay false and the UI shows honest "non cal."
+    // ranges instead of fake "sûr" badges.
     const summary = { horizons: {}, variables: {} };
-    for (const [label, confs] of Object.entries(horizons)) {
-      const avg = confs.reduce((a, b) => a + b, 0) / confs.length;
+    for (const [label, bucket] of Object.entries(horizons)) {
+      const avg = bucket.reduce((a, b) => a + b.confidence, 0) / bucket.length;
       summary.horizons[label] = {
-        avg_confidence: +avg.toFixed(3), sure_share: 0, n: confs.length,
+        avg_confidence: +avg.toFixed(3),
+        sure_share: +(bucket.filter((i) => i.sure).length / bucket.length).toFixed(3),
+        n: bucket.length,
       };
     }
-    for (const [v, confs] of Object.entries(byVar)) {
-      const avg = confs.reduce((a, b) => a + b, 0) / confs.length;
-      summary.variables[v] = { avg_confidence: +avg.toFixed(3), sure: false };
+    for (const [v, bucket] of Object.entries(byVar)) {
+      const avg = bucket.reduce((a, b) => a + b.confidence, 0) / bucket.length;
+      summary.variables[v] = {
+        avg_confidence: +avg.toFixed(3),
+        sure: bucket.every((i) => i.sure),
+      };
     }
     return summary;
   }
@@ -228,40 +248,69 @@ window.SureLocal = (() => {
           }
           if (!vals.length) continue;
           const isDir = variable === "wind_direction_10m";
-          const consensus = isDir ? circularMean(vals) : median(vals);
-          const med = isDir ? consensus : median(vals);
-          let spread = isDir ? circularSpread(vals, med) : mad(vals, med);
-          if (!(spread > 0)) spread = std(vals, isDir ? undefined : med) || 0.5;
+          // Learned per-model stats (null until ~5 matched residuals).
+          const LEARN = window.SureLearn;
+          const stats = provs.map((p) => LEARN ? LEARN.getStat(p, variable, horizon_h, lat, lon) : null);
+          const corrs = vals.map((v, i) => {
+            const st = stats[i];
+            // Directions: never bias-shifted (circular), like the backend.
+            if (isDir || !st) return v;
+            return v - st.bias;
+          });
+          const weights = stats.map((st) => (LEARN ? LEARN.weightOf(st) : 1));
+          const anyLearned = stats.some((st) => st && st.n >= (LEARN ? LEARN.MIN_N : 1e9));
+          const consensus = isDir ? circularMean(corrs) : weightedMedian(corrs, weights);
+          const med = isDir ? consensus : median(corrs);
+          let spread = isDir ? circularSpread(corrs, med) : mad(corrs, med);
+          if (!(spread > 0)) spread = std(corrs, isDir ? undefined : med) || 0.5;
           const tol = TOL[variable] ?? 1.5;
-          const sigmaLearned = (PRIOR[variable] ?? 2.0) / Math.sqrt(vals.length);
+          // Learned component: inverse-variance combination of the models'
+          // own rmses (backend formula); otherwise the generic prior.
+          let sigmaLearned;
+          const inv = stats.filter(Boolean).reduce((a, st) => a + 1 / (st.rmse * st.rmse), 0);
+          if (inv > 0) sigmaLearned = 1 / Math.sqrt(inv);
+          else sigmaLearned = (PRIOR[variable] ?? 2.0) / Math.sqrt(vals.length);
           const sigmaTotal = Math.hypot(sigmaLearned, spread / 0.8);
           const confidence = +erf(tol / (sigmaTotal * Math.SQRT2)).toFixed(3);
           const low = clamp(consensus - tol, variable);
           const high = clamp(consensus + tol, variable);
+          const sure = anyLearned && confidence >= 0.98; // backend parity
           out.push({
             variable, valid_at: new Date(vt).toISOString(),
             value: +clamp(consensus, variable).toFixed(2),
-            confidence, calibrated: false, dispersion: +spread.toFixed(3),
-            bias_corrected: false, tolerance: tol,
+            confidence, calibrated: anyLearned, dispersion: +spread.toFixed(3),
+            bias_corrected: anyLearned, tolerance: tol,
             low: +low.toFixed(2), high: +high.toFixed(2),
-            sure: false, horizon_h,
+            sure, horizon_h,
             contributors: provs,
           });
           if (variable === "temperature_2m") {
+            const totW = weights.reduce((a, b) => a + b, 0) || 1;
             breakdownByTime[t] = provs.map((p, i) => ({
-              provider: p, raw: +vals[i].toFixed(2), bias: 0,
-              corr: +vals[i].toFixed(2), weight: 1,
+              provider: p, raw: +vals[i].toFixed(2),
+              bias: stats[i] ? +stats[i].bias.toFixed(2) : 0,
+              corr: +corrs[i].toFixed(2), weight: +weights[i].toFixed(3),
+              share: +(weights[i] / totW * 100).toFixed(1),
             }));
           }
         }
       }
-      // Nearest temp hour at/after now for the sources table.
+      // Nearest temp hour at/after now for the sources table (shares are
+      // the real learned weights, computed above — not equal splits).
       const bTimes = Object.keys(breakdownByTime).sort();
       const b0 = bTimes.find((t) => new Date(t).getTime() >= now.getTime() - 30 * 60e3) || bTimes[0];
-      const breakdown = (breakdownByTime[b0] || []).map((r) => ({
-        ...r, share: +((100 / Math.max(1, (breakdownByTime[b0] || []).length)).toFixed(1)),
-      }));
+      const breakdown = [...(breakdownByTime[b0] || [])].sort((a, b) => b.weight - a.weight);
       const flat = Math.round(lat / 0.1) * 0.1, flon = Math.round(lon / 0.1) * 0.1;
+      // Feed the learner: record raw per-model series, then refresh biases
+      // in the background (throttled to 6h, never blocking the forecast).
+      try {
+        if (window.SureLearn) {
+          window.SureLearn.record(lat, lon, times, perModel, HOURLY, seriesOf);
+          if (window.SureLearn.shouldLearn() && navigator.onLine !== false) {
+            window.SureLearn.learnTruth(lat, lon, ctrl.signal).catch(() => {});
+          }
+        }
+      } catch { /* learning is best-effort */ }
       return {
         location: { lat, lon },
         cell: `${flat.toFixed(4)},${flon.toFixed(4)}`,

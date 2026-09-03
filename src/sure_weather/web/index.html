@@ -188,6 +188,17 @@
           <span class="card__badge" id="sources-badge"></span>
         </div>
         <p class="card__hint" data-i18n="sources_hint">Températures brutes par source à l'échéance la plus proche, biais corrigé, et moyenne pondérée calibrée (= notre prévision).</p>
+        <div class="deep">
+          <button class="btn btn--ghost deep__btn" id="deep-btn" type="button">🔬 <span data-i18n="deep_btn">Analyse profonde</span></button>
+          <span class="deep__status" id="deep-status"></span>
+        </div>
+        <div class="tablewrap" id="learn-wrap" hidden>
+          <table class="table" id="learn-table">
+            <thead><tr><th data-i18n="th_src">Source</th><th data-i18n="th_n">Mesures</th><th data-i18n="th_learn_bias">Biais appris</th><th data-i18n="th_learn_rmse">Erreur</th><th data-i18n="th_weight">Poids</th></tr></thead>
+            <tbody id="learn-body"></tbody>
+          </table>
+          <p class="card__hint" data-i18n="deep_hint">Vérité = analyse des 14 derniers jours. Les biais appris corrigent les prévisions suivantes ; les poids suivent la fiabilité historique.</p>
+        </div>
         <div class="tablewrap">
           <table class="table" id="sources-table">
             <thead><tr><th data-i18n="th_src">Source</th><th data-i18n="th_raw">Brut</th><th data-i18n="th_bias">Biais</th><th data-i18n="th_corr">Corrigé</th><th data-i18n="th_weight">Poids</th><th data-i18n="th_share">Part</th></tr></thead>
@@ -230,6 +241,7 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin="" defer></script>
   <script src="/static/local-provider.js" defer></script>
+  <script src="/static/local-learn.js" defer></script>
   <script src="/static/i18n.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>

@@ -223,6 +223,11 @@ html[data-theme="dark"] body[data-sky="partly"] { background: linear-gradient(18
   background: none; color: var(--ink-faint); font-size: 14px; cursor: pointer;
 }
 .fav__mini:hover { background: var(--accent-soft); color: var(--ink); }
+/* Deep-analysis row above the learn report table. */
+.deep { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+.deep__btn { padding: 7px 13px; font-size: 12.5px; }
+.deep__btn:disabled { opacity: .55; cursor: wait; }
+.deep__status { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .fav__empty { padding: 9px 11px; font-size: 12.5px; color: var(--ink-faint); }
 .fav__toggle {
   background: none;

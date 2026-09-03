@@ -1554,6 +1554,49 @@ document.getElementById("refresh-btn")?.addEventListener("click", () => {
   loadForecast();
 });
 
+/* Deep analysis (standalone): match this place's recorded forecasts against
+   14 days of analysis truth, learn per-model biases, show the report, then
+   refetch so the learned corrections apply immediately. */
+document.getElementById("deep-btn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("deep-btn");
+  const status = document.getElementById("deep-status");
+  if (!window.SureLearn) return;
+  btn.disabled = true;
+  try {
+    status.textContent = tr("deep_running", { n: "" });
+    const rep = await window.SureLearn.deepAnalyze(state.lat, state.lon, (done, total) => {
+      status.textContent = tr("deep_running", { n: `${done}/${total}` });
+    });
+    renderLearnReport(rep);
+    const calibrated = rep.rows.filter((r) => r.n >= window.SureLearn.MIN_N).length;
+    let msg = tr("deep_done", { m: rep.matched, k: calibrated });
+    if (rep.matched === 0) msg += " " + tr("deep_fresh");
+    if (!rep.rows.length) msg += " — " + tr("deep_empty");
+    status.textContent = msg;
+    dataCache.delete(cacheKey());
+    await loadForecast();
+  } catch (e) {
+    status.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderLearnReport(rep) {
+  const wrap = document.getElementById("learn-wrap");
+  const tb = document.getElementById("learn-body");
+  if (!wrap || !tb) return;
+  tb.innerHTML = "";
+  if (!rep.rows.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  for (const r of rep.rows) {
+    const trEl = document.createElement("tr");
+    const bias = r.tempBias == null ? "—" : `${r.tempBias > 0 ? "+" : ""}${r.tempBias}°`;
+    trEl.innerHTML = `<td>${escHtml(r.model)}</td><td>${r.n}</td><td>${bias}</td><td>${r.tempRmse == null ? "—" : r.tempRmse + "°"}</td><td>${r.weight}</td>`;
+    tb.appendChild(trEl);
+  }
+}
+
 $("#fav-open").addEventListener("click", () => {
   const menu = el("fav-list");
   const btn = el("fav-open");
