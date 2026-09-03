@@ -1285,7 +1285,10 @@ function renderTimeline(times, byTime, graph = state.graph) {
       parts.push(`<path d="${area}" fill="url(#mg-area)"/>`);
       parts.push(`<path d="${line}" fill="none" stroke="${base}" stroke-width="2.5" stroke-linecap="round"/>`);
     }
-    const tStep = Math.max(1, Math.ceil(40 / Math.max(colW, 1)));
+    const tStep = Math.max(1, Math.ceil(64 / Math.max(colW, 1)));
+    // Value labels live BELOW the icon lane (padT-24): near the top of the
+    // plot they flip under the point instead of colliding with icons.
+    const labelY = (py, below) => (below || py - 7 < padT - 24 ? py + 16 : py - 7);
     // Wind tab: flow arrow beside each labeled point (direction the wind
     // GOES TO = reported direction + 180).
     const windDirs = graph === "wind_speed_10m"
@@ -1294,7 +1297,7 @@ function renderTimeline(times, byTime, graph = state.graph) {
     pts.forEach((p, i) => {
       const col = graph === "temperature_2m" ? cFn(p[2]) : base;
       if (i % tStep === 0) {
-        parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col}">${round(p[2])}${suf}</text>`);
+        parts.push(`<text x="${p[0].toFixed(1)}" y="${labelY(p[1]).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col}">${round(p[2])}${suf}</text>`);
         if (windDirs && windDirs[i] != null) {
           const a = ((windDirs[i] + 180) % 360).toFixed(0);
           parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] + 16).toFixed(1)}" text-anchor="middle" class="mg-windarrow" transform="rotate(${a} ${p[0].toFixed(1)} ${(p[1] + 16).toFixed(1)})">➤</text>`);
@@ -1312,11 +1315,12 @@ function renderTimeline(times, byTime, graph = state.graph) {
       });
       const labeled = new Set();
       pts.forEach((p, i) => { if (i % tStep === 0) labeled.add(i); });
+      const nearLabeled = (j) => { for (const l of labeled) if (Math.abs(l - j) <= 1) return true; return false; };
       const col = (i) => (graph === "temperature_2m" ? cFn(pts[i][2]) : base);
-      if (!labeled.has(iMax)) {
-        parts.push(`<text x="${pts[iMax][0].toFixed(1)}" y="${(yFor(pts[iMax][2]) - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col(iMax)}">▲ ${round(pts[iMax][2])}${suf}</text>`);
+      if (!nearLabeled(iMax)) {
+        parts.push(`<text x="${pts[iMax][0].toFixed(1)}" y="${labelY(yFor(pts[iMax][2])).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col(iMax)}">▲ ${round(pts[iMax][2])}${suf}</text>`);
       }
-      if (!labeled.has(iMin) && iMin !== iMax) {
+      if (iMin !== iMax && !nearLabeled(iMin)) {
         parts.push(`<text x="${pts[iMin][0].toFixed(1)}" y="${(yFor(pts[iMin][2]) + 16).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col(iMin)}">▼ ${round(pts[iMin][2])}${suf}</text>`);
       }
     }
@@ -1912,8 +1916,10 @@ async function refreshLocalModelLayer() {
   const layer = mapLayer;
   const b = map.getBounds();
   try {
+    // 16×16 like the backend's city zoom: fine enough for neighbourhood
+    // nuances instead of one big blob.
     const g = await window.SureLocal.modelGrid(
-      layer, b.getNorth(), b.getWest(), b.getSouth(), b.getEast(), 12
+      layer, b.getNorth(), b.getWest(), b.getSouth(), b.getEast(), 16
     );
     if (seq !== localGridSeq || layer !== mapLayer) return;
     const n = g.n;
@@ -1935,7 +1941,7 @@ async function refreshLocalModelLayer() {
     if (seq !== localGridSeq || layer !== mapLayer) return;
     if (modelLayer) map.removeLayer(modelLayer);
     modelLayer = L.imageOverlay(big.toDataURL(), [[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]], {
-      opacity: 0.75, interactive: false,
+      opacity: 0.62, interactive: false,
     }).addTo(map);
   } catch { /* decorative: never break the map */ }
 }

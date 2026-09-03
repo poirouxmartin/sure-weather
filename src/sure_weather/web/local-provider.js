@@ -35,6 +35,20 @@ window.SureLocal = (() => {
     wind_speed_10m: [0, null], wind_gusts_10m: [0, null],
     wind_direction_10m: [0, 360], uv_index: [0, null], visibility: [0, null],
   };
+  /* Plausibility guard: a corrupt model value (sensor glitch, unit slip)
+     must never enter the consensus. Mirrors the backend's hard validation. */
+  const PLAUSIBLE = {
+    temperature_2m: [-90, 60], dew_point_2m: [-90, 60],
+    relative_humidity_2m: [0, 100], precipitation: [0, 500],
+    precipitation_probability: [0, 100], cloud_cover: [0, 100],
+    wind_speed_10m: [0, 150], wind_gusts_10m: [0, 150],
+    wind_direction_10m: [0, 360], uv_index: [0, 25],
+    pressure_msl: [850, 1100], visibility: [0, 100000],
+  };
+  function plausible(variable, v) {
+    const b = PLAUSIBLE[variable];
+    return !b || (v >= b[0] && v <= b[1]);
+  }
   // Prior rmse per variable (typical inter-model error when all agree):
   // pressure models agree to ~1 hPa, not ±2 — a flat prior capped every
   // agreeing variable at ~70% and dragged the average down with it.
@@ -91,14 +105,40 @@ window.SureLocal = (() => {
     return v;
   }
 
-  async function fetchModel(model, lat, lon, signal) {
-    const url =
+  /* One combined request for all models (keys {var}_{model}), exactly like
+     the backend collector: 1 request instead of 8 → far fewer 429s.
+     wind_speed_unit=ms is MANDATORY: the app displays ×3.6 (km/h). */
+  const HIRES_MODELS = ["meteofrance_arome_france", "icon_d2"];
+  function forecastUrl(lat, lon, models) {
+    return (
       `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
-      `&hourly=${HOURLY.join(",")}&daily=sunrise,sunset&models=${model}` +
-      `&forecast_days=7&past_days=1&timezone=UTC`;
-    const r = await fetch(url, { signal });
-    if (!r.ok) throw new Error(`model ${model}: ${r.status}`);
-    return { model, data: await r.json() };
+      `&hourly=${HOURLY.join(",")}&daily=sunrise,sunset&models=${models.join(",")}` +
+      `&forecast_days=7&past_days=1&wind_speed_unit=ms&timezone=UTC`
+    );
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function fetchJson(url, signal, what) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const r = await fetch(url, { signal });
+        if (r.status === 429 || (r.status >= 500 && r.status <= 599)) {
+          lastErr = new Error(`${what}: serveur saturé (${r.status}), nouvel essai…`);
+          await sleep(attempt * 2000);
+          continue;
+        }
+        if (!r.ok) throw new Error(`${what}: erreur ${r.status}`);
+        return await r.json();
+      } catch (e) {
+        // Offline / DNS / CORS: no point retrying the same burst.
+        if (e instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(e.message || "")) {
+          throw new Error("pas de connexion Internet — vérifie le réseau puis réessaie");
+        }
+        lastErr = e;
+        if (attempt < 3) await sleep(attempt * 2000);
+      }
+    }
+    throw lastErr || new Error(`${what}: échec`);
   }
 
   function summarize(items) {
@@ -131,30 +171,45 @@ window.SureLocal = (() => {
     return summary;
   }
 
-  async function forecast(lat, lon, hours = 168, timeoutMs = 40000) {
+  async function forecast(lat, lon, hours = 168, timeoutMs = 60000) {
     const now = new Date();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let results, sun;
+    let sun;
     try {
-      const settled = await Promise.allSettled(
-        MODELS.map((m) => fetchModel(m, lat, lon, ctrl.signal))
-      );
-      const ok = settled.filter((s) => s.status === "fulfilled").map((s) => s.value);
-      if (!ok.length) throw new Error("no model answered (offline?)");
+      const data = await fetchJson(forecastUrl(lat, lon, MODELS), ctrl.signal, "prévisions");
+      // High-res regional models (AROME France 1.3km, ICON-D2 2.2km):
+      // best-effort, skipped silently outside their domain.
+      let hiData = null;
+      try {
+        hiData = await fetchJson(forecastUrl(lat, lon, HIRES_MODELS), ctrl.signal, "haute-résolution");
+      } catch { hiData = null; }
+      const hourly = data.hourly || {};
+      const modelsOk = MODELS.filter((m) => HOURLY.some((v) => hourly[`${v}_${m}`] || hourly[v]));
+      if (!modelsOk.length) throw new Error("réponse météo vide — réessaie dans une minute");
       // timezone=UTC was requested: stamp Z so browsers parse true UTC.
+      // NOTE: with several models, daily vars come back suffixed per model
+      // (sunrise_gfs_seamless, …) — plain `sunrise` is then absent.
       const stamp = (xs) => (xs || []).map((x) => (/Z|[+-]\d{2}:?\d{2}$/.test(x) ? x : x + "Z"));
-      const d0 = ok[0].data.daily || {};
-      sun = { sunrise: stamp(d0.sunrise), sunset: stamp(d0.sunset) };
-      // Union of hourly time axes (same params → normally identical).
-      const timeSet = new Set();
-      const perModel = ok.map(({ model, data }) => {
-        const h = data.hourly || {};
-        const times = (h.time || []).map((t) => t + "Z");
-        times.forEach((t) => timeSet.add(t));
-        return { model, hourly: h, times };
-      });
-      const times = [...timeSet].sort();
+      const d0 = data.daily || {};
+      const pickDaily = (prefix) =>
+        d0[prefix] || d0[`${prefix}_${MODELS[0]}`] ||
+        (Object.entries(d0).find(([k]) => k.startsWith(prefix + "_")) || [])[1] || [];
+      sun = { sunrise: stamp(pickDaily("sunrise")), sunset: stamp(pickDaily("sunset")) };
+      // Per-model series (combined request → {var}_{model} keys; plain {var}
+      // fallback when a single model answers).
+      const times = (hourly.time || []).map((t) => t + "Z");
+      const timeIndex = {};
+      times.forEach((t, i) => { timeIndex[t] = i; });
+      const seriesOf = (h, varName, model) => h[`${varName}_${model}`] || h[varName] || [];
+      const perModel = modelsOk.map((model) => ({ model, hourly }));
+      if (hiData && hiData.hourly) {
+        for (const m of HIRES_MODELS) {
+          if (HOURLY.some((v) => hiData.hourly[`${v}_${m}`] || hiData.hourly[v])) {
+            perModel.push({ model: m, hourly: hiData.hourly });
+          }
+        }
+      }
       const lo = now.getTime() - 3600e3;
       const out = [];
       const breakdownByTime = {};
@@ -164,13 +219,11 @@ window.SureLocal = (() => {
         const horizon_h = +(((vt - now.getTime()) / 3600e3).toFixed(1));
         for (const variable of HOURLY) {
           const vals = [], provs = [];
+          const idx = timeIndex[t];
           for (const pm of perModel) {
-            const idx = pm.times.indexOf(t);
-            if (idx < 0) continue;
-            const series = pm.hourly[variable];
-            if (!series) continue;
-            const v = series[idx];
-            if (v === null || v === undefined) continue;
+            const v = seriesOf(pm.hourly, variable, pm.model)[idx];
+            if (v === null || v === undefined || !Number.isFinite(v)) continue;
+            if (!plausible(variable, v)) continue; // corrupt model value
             vals.push(v); provs.push(pm.model);
           }
           if (!vals.length) continue;
@@ -215,12 +268,12 @@ window.SureLocal = (() => {
         generated_at: now.toISOString(),
         forecast: out,
         summary: summarize(out),
-        partial: ok.length < 3, // fewer than 3 models: degraded consensus
+        partial: perModel.length < 3, // fewer than 3 models: degraded consensus
         breakdown,
         breakdown_valid_at: b0 ? new Date(b0).toISOString() : null,
         sun: { daily: sun },
         local: true,
-        models_ok: ok.map((o) => o.model),
+        models_ok: perModel.map((p) => p.model),
       };
     } finally {
       clearTimeout(timer);
@@ -340,7 +393,8 @@ window.SureLocal = (() => {
     for (const la of lats) for (const lo of lons) {
       params.push(`latitude=${la.toFixed(4)}`, `longitude=${lo.toFixed(4)}`);
     }
-    params.push("current=wind_speed_10m,wind_direction_10m");
+    // m/s like everywhere else: the app displays ×3.6 (km/h).
+    params.push("current=wind_speed_10m,wind_direction_10m", "wind_speed_unit=ms");
     const r = await fetch(`https://api.open-meteo.com/v1/forecast?${params.join("&")}`, { signal });
     if (!r.ok) throw new Error(`wind ${r.status}`);
     const samples = await r.json();
