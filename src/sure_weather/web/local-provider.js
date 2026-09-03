@@ -35,6 +35,15 @@ window.SureLocal = (() => {
     wind_speed_10m: [0, null], wind_gusts_10m: [0, null],
     wind_direction_10m: [0, 360], uv_index: [0, null], visibility: [0, null],
   };
+  // Prior rmse per variable (typical inter-model error when all agree):
+  // pressure models agree to ~1 hPa, not ±2 — a flat prior capped every
+  // agreeing variable at ~70% and dragged the average down with it.
+  const PRIOR = {
+    temperature_2m: 1.2, dew_point_2m: 1.5, relative_humidity_2m: 5.0,
+    precipitation: 0.3, precipitation_probability: 12.0, cloud_cover: 12.0,
+    wind_speed_10m: 1.2, wind_gusts_10m: 1.8, wind_direction_10m: 18.0,
+    uv_index: 0.6, pressure_msl: 1.0, visibility: 3000.0,
+  };
   const SURE_VARS = ["temperature_2m", "wind_speed_10m", "wind_gusts_10m",
     "pressure_msl", "dew_point_2m", "precipitation_probability"];
 
@@ -133,7 +142,10 @@ window.SureLocal = (() => {
       );
       const ok = settled.filter((s) => s.status === "fulfilled").map((s) => s.value);
       if (!ok.length) throw new Error("no model answered (offline?)");
-      sun = ok[0].data.daily || {};
+      // timezone=UTC was requested: stamp Z so browsers parse true UTC.
+      const stamp = (xs) => (xs || []).map((x) => (/Z|[+-]\d{2}:?\d{2}$/.test(x) ? x : x + "Z"));
+      const d0 = ok[0].data.daily || {};
+      sun = { sunrise: stamp(d0.sunrise), sunset: stamp(d0.sunset) };
       // Union of hourly time axes (same params → normally identical).
       const timeSet = new Set();
       const perModel = ok.map(({ model, data }) => {
@@ -168,7 +180,7 @@ window.SureLocal = (() => {
           let spread = isDir ? circularSpread(vals, med) : mad(vals, med);
           if (!(spread > 0)) spread = std(vals, isDir ? undefined : med) || 0.5;
           const tol = TOL[variable] ?? 1.5;
-          const sigmaLearned = 2.0 / Math.sqrt(vals.length); // model prior rmse
+          const sigmaLearned = (PRIOR[variable] ?? 2.0) / Math.sqrt(vals.length);
           const sigmaTotal = Math.hypot(sigmaLearned, spread / 0.8);
           const confidence = +erf(tol / (sigmaTotal * Math.SQRT2)).toFixed(3);
           const low = clamp(consensus - tol, variable);
@@ -235,6 +247,89 @@ window.SureLocal = (() => {
     return r.json();
   }
 
+  /* Model overlay layers (same ranges as the backend renderer): sampled
+     on a grid over the viewport from Open-Meteo directly, drawn by the app
+     on a canvas imageOverlay. */
+  const LAYER_VARS = {
+    temp: "temperature_2m", precip: "precipitation", uv: "uv_index",
+    humidity: "relative_humidity_2m", cloud: "cloud_cover",
+    pressure: "pressure_msl",
+  };
+  const LUTS = {
+    temp: { vmin: -10, vmax: 40, stops: [
+      [-10, [69, 117, 180, 200]], [0, [116, 173, 209, 200]],
+      [10, [171, 221, 164, 200]], [18, [254, 224, 144, 200]],
+      [25, [253, 174, 97, 215]], [33, [244, 109, 67, 225]],
+      [40, [165, 0, 38, 230]]] },
+    precip: { vmin: 0, vmax: 20, stops: [
+      [0, [255, 255, 255, 0]], [0.1, [200, 230, 255, 120]],
+      [0.5, [120, 190, 255, 165]], [2, [60, 140, 255, 205]],
+      [6, [30, 90, 220, 235]], [12, [20, 40, 160, 245]],
+      [20, [10, 10, 90, 250]]] },
+    uv: { vmin: 0, vmax: 11, stops: [
+      [0, [60, 180, 75, 140]], [2, [120, 200, 80, 165]],
+      [4, [255, 220, 60, 180]], [6, [255, 150, 30, 200]],
+      [8, [220, 50, 50, 220]], [11, [140, 40, 180, 230]]] },
+    humidity: { vmin: 0, vmax: 100, stops: [
+      [0, [255, 255, 255, 0]], [30, [200, 220, 255, 110]],
+      [60, [100, 160, 255, 175]], [85, [30, 90, 200, 210]],
+      [100, [10, 40, 120, 225]]] },
+    cloud: { vmin: 0, vmax: 100, stops: [
+      [0, [255, 255, 255, 0]], [20, [220, 220, 220, 90]],
+      [50, [160, 160, 160, 150]], [80, [90, 90, 90, 190]],
+      [100, [40, 40, 40, 215]]] },
+    pressure: { vmin: 980, vmax: 1030, stops: [
+      [980, [120, 80, 180, 170]], [1000, [100, 150, 220, 175]],
+      [1015, [120, 200, 120, 165]], [1030, [220, 180, 80, 185]]] },
+  };
+  function lutColor(layer, v) {
+    const lut = LUTS[layer];
+    if (!lut || v == null || !Number.isFinite(v)) return [0, 0, 0, 0];
+    const st = lut.stops;
+    if (v <= st[0][0]) return st[0][1];
+    for (let i = 0; i < st.length - 1; i++) {
+      const [v0, c0] = st[i], [v1, c1] = st[i + 1];
+      if (v <= v1) {
+        const f = (v - v0) / Math.max(1e-9, v1 - v0);
+        return [0, 1, 2, 3].map((k) => Math.round(c0[k] + (c1[k] - c0[k]) * f));
+      }
+    }
+    return st[st.length - 1][1];
+  }
+
+  async function modelGrid(layer, latN, lonW, latS, lonE, n = 12, signal) {
+    const variable = LAYER_VARS[layer];
+    if (!variable) throw new Error("unknown layer");
+    const lats = [], lons = [];
+    for (let i = 0; i < n; i++) {
+      lats.push(latN + ((latS - latN) * i) / (n - 1));
+      lons.push(lonW + ((lonE - lonW) * i) / (n - 1));
+    }
+    const params = [];
+    for (const la of lats) for (const lo of lons) {
+      params.push(`latitude=${la.toFixed(3)}`, `longitude=${lo.toFixed(3)}`);
+    }
+    params.push(`hourly=${variable}`, "models=gfs_seamless", "forecast_days=2", "timezone=UTC");
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?${params.join("&")}`, { signal });
+    if (!r.ok) throw new Error(`grid ${r.status}`);
+    const samples = await r.json();
+    if (!Array.isArray(samples)) throw new Error("grid shape");
+    // Current-hour index from the first location's time axis.
+    const t0 = (samples[0]?.hourly?.time || []).map((t) => t + "Z");
+    const nowMs = Date.now();
+    let idx = 0, best = Infinity;
+    t0.forEach((t, i) => {
+      const d = Math.abs(new Date(t).getTime() - nowMs);
+      if (d < best) { best = d; idx = i; }
+    });
+    const grid = [];
+    samples.forEach((s) => {
+      const series = s?.hourly?.[variable] || [];
+      grid.push(series[idx] ?? null);
+    });
+    return { lats, lons, n, grid, at: t0[idx] || null };
+  }
+
   async function windGrid(latN, lonW, latS, lonE, n = 6, signal) {
     const lats = [], lons = [];
     for (let i = 0; i < n; i++) {
@@ -264,5 +359,5 @@ window.SureLocal = (() => {
     return { points };
   }
 
-  return { MODELS, forecast, geocodeNominatim, radar, windGrid };
+  return { MODELS, LAYER_VARS, forecast, geocodeNominatim, radar, windGrid, modelGrid, lutColor };
 })();

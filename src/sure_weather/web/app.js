@@ -130,8 +130,37 @@ function toggleFavorite() {
   if (idx >= 0) {
     list.splice(idx, 1);
   } else {
-    list.unshift({ lat: state.lat, lon: state.lon, name: state.name });
+    // Name it now so the place stays reusable after you leave: the prompt
+    // defaults to the current display name (city, address, or coords).
+    let name = state.name;
+    try {
+      const answer = prompt(tr("fav_name"), state.name);
+      if (answer === null) return; // cancelled: don't add
+      name = (answer.trim() || state.name).slice(0, 60);
+    } catch { /* prompt blocked: keep display name */ }
+    list.unshift({ lat: state.lat, lon: state.lon, name });
   }
+  saveFavorites(list);
+  renderFavorites();
+}
+
+function renameFavorite(i) {
+  const list = loadFavorites();
+  if (!list[i]) return;
+  try {
+    const answer = prompt(tr("fav_rename"), list[i].name || "");
+    if (answer === null) return;
+    const name = answer.trim().slice(0, 60);
+    if (!name) return;
+    list[i].name = name;
+    saveFavorites(list);
+    renderFavorites();
+  } catch { /* prompt blocked */ }
+}
+
+function deleteFavorite(i) {
+  const list = loadFavorites();
+  list.splice(i, 1);
   saveFavorites(list);
   renderFavorites();
 }
@@ -155,12 +184,14 @@ function renderFavorites() {
     wrap.appendChild(empty);
     return;
   }
-  for (const f of list) {
+  list.forEach((f, i) => {
     const li = document.createElement("li");
+    li.className = "fav__row";
     const a = document.createElement("button");
     a.type = "button";
     a.className = "fav__item";
     a.textContent = f.name;
+    a.title = `${Number(f.lat).toFixed(3)}, ${Number(f.lon).toFixed(3)}`;
     a.addEventListener("click", async () => {
       state.lat = f.lat;
       state.lon = f.lon;
@@ -168,9 +199,23 @@ function renderFavorites() {
       closeFavorites();
       await loadForecast();
     });
-    li.appendChild(a);
+    const rn = document.createElement("button");
+    rn.type = "button";
+    rn.className = "fav__mini";
+    rn.textContent = "✎";
+    rn.title = tr("fav_rename");
+    rn.setAttribute("aria-label", tr("fav_rename"));
+    rn.addEventListener("click", (e) => { e.stopPropagation(); renameFavorite(i); });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "fav__mini";
+    del.textContent = "×";
+    del.title = tr("fav_remove");
+    del.setAttribute("aria-label", tr("fav_remove"));
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteFavorite(i); });
+    li.append(a, rn, del);
     wrap.appendChild(li);
-  }
+  });
 }
 
 function closeFavorites() {
@@ -745,17 +790,14 @@ async function loadForecastLocal(token, key, cached) {
   }
 }
 
-/* Standalone UI: model-tile layers need the backend renderer — keep live
-   radar (direct RainViewer) + streets. Called once when backendDown flips. */
+/* Standalone UI: model layers render on-device (canvas overlay sampled
+   from Open-Meteo over the viewport), so every layer stays available. */
 function initLocalModeUI() {
   const sel = document.getElementById("map-layer");
   if (sel) {
-    for (const opt of sel.options) {
-      if (!["radar", "streets"].includes(opt.value)) opt.disabled = true;
-    }
-    if (!["radar", "streets"].includes(sel.value)) sel.value = "radar";
+    for (const opt of sel.options) opt.disabled = false;
   }
-  mapLayer = "radar";
+  if (mapLayer && map) applyMapLayer();
 }
 
 function showError(message) {
@@ -827,6 +869,12 @@ function render(data, hours = state.hours) {
   }
 
   el("loc-name").textContent = state.name;
+  // When the fusion ran: honest staleness indicator next to the place name.
+  try {
+    el("computed-at").textContent = data.generated_at
+      ? tr("computed_at", { t: new Date(data.generated_at).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR", { hour: "2-digit", minute: "2-digit" }) })
+      : "";
+  } catch { el("computed-at").textContent = ""; }
   // Union of contributors across the whole window: the first item alone can
   // undercount (its group may lack station reports).
   const contributors = new Set(fc.flatMap((i) => i.contributors ?? []));
@@ -873,7 +921,6 @@ function render(data, hours = state.hours) {
   renderTimeline(times, byTime);
   renderSunCard(byTime, data.sun);
   renderUvCard(byTime);
-  renderAirCard(byTime);
 
   /* Hourly cards */
   renderHours(times, byTime);
@@ -901,18 +948,29 @@ function minutesBetween(a, b) {
   if (!a || !b) return 0;
   return Math.max(0, Math.round((new Date(b) - new Date(a)) / 60000));
 }
+/* Pick the sunrise/sunset pair containing "now" (not blindly [0], which is
+   yesterday once the day rolls over). After the last sunset, show that pair
+   with the dot parked at 100%. */
+function pickSunPair(daily, nowMs) {
+  const sr = daily?.sunrise || [], ss = daily?.sunset || [];
+  const n = Math.max(sr.length, ss.length);
+  for (let i = 0; i < n; i++) {
+    const e = ss[i] ? new Date(ss[i]).getTime() : NaN;
+    if (Number.isFinite(e) && nowMs <= e) return { sunrise: sr[i], sunset: ss[i] };
+  }
+  const l = n - 1;
+  return l >= 0 ? { sunrise: sr[l], sunset: ss[l] } : {};
+}
 function renderSunCard(byTime, sun) {
   const elSun = document.getElementById("sun-card");
   if (!elSun) return;
-  const daily = sun?.daily;
-  let sunrise = daily?.sunrise?.[0];
-  let sunset = daily?.sunset?.[0];
+  const now = Date.now();
+  let { sunrise, sunset } = pickSunPair(sun?.daily, now);
   // fallback: compute from sunData global if payload shape differs
-  if (!sunrise && sunData?.daily) { sunrise = sunData.daily.sunrise?.[0]; sunset = sunData.daily.sunset?.[0]; }
+  if (!sunrise && sunData?.daily) ({ sunrise, sunset } = pickSunPair(sunData.daily, now));
   const mins = minutesBetween(sunrise, sunset);
   const h = Math.floor(mins / 60), m = mins % 60;
   const dur = mins ? `${h}h${String(m).padStart(2, "0")}` : "—";
-  const now = Date.now();
   const sr = sunrise ? new Date(sunrise).getTime() : null;
   const ss = sunset ? new Date(sunset).getTime() : null;
   let pct = 0;
@@ -937,41 +995,17 @@ function renderUvCard(byTime) {
   const level = cur <= 2 ? tr("uv_low") : cur <= 5 ? tr("uv_mod") : cur <= 7 ? tr("uv_high") : cur <= 10 ? tr("uv_vhigh") : tr("uv_extreme");
   const color = cur <= 2 ? "#22c55e" : cur <= 5 ? "#eab308" : cur <= 7 ? "#f97316" : cur <= 10 ? "#ef4444" : "#a855f7";
   const pct = Math.max(0, Math.min(100, (cur / 11) * 100));
-  const spark = Object.keys(byTime).sort().slice(0, 24).map(k => byTime[k].uv_index?.value ?? 0);
-  const spMax = Math.max(...spark, 1);
-  const pts = spark.map((v, i) => `${(i / Math.max(1, spark.length - 1)) * 100},${100 - (v / spMax) * 70}`).join(" ");
+  // Compact single row: badge + gauge. Peak of the day in the title.
   elUv.innerHTML = `
     <div class="sunuv__head"><span class="sunuv__title">${tr("uv_title")}</span><span class="sunuv__badge" style="background:${color}">${cur?.toFixed(1) ?? "—"} · ${level}</span></div>
-    <div class="sunuv__gauge"><div class="sunuv__track"><div class="sunuv__fill" style="width:${pct}%;background:${color}"></div></div><div class="sunuv__ticks"><span>0</span><span>3</span><span>6</span><span>8</span><span>11+</span></div></div>
-    <svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="${color}" stroke-width="2" points="${pts}"/></svg>
-    <div class="sunuv__hint">${tr("uv_hint")}</div>`;
+    <div class="sunuv__gauge" title="${escHtml(tr("uv_hint"))} · max ${mx.toFixed(1)}"><div class="sunuv__track"><div class="sunuv__fill" style="width:${pct}%;background:${color}"></div></div></div>`;
 }
+/* Air & pressure card removed (humidity/pressure live in the graph tabs,
+   the hourly detail and the table): kept as a no-op so older cached HTML
+   calling it never throws. */
 function renderAirCard(byTime) {
   const elAir = document.getElementById("air-card");
-  if (!elAir) return;
-  const times = Object.keys(byTime).sort();
-  const hum = times.map(k => byTime[k].relative_humidity_2m?.value).filter(v => v != null);
-  const pres = times.map(k => byTime[k].pressure_msl?.value).filter(v => v != null);
-  const curH = hum[0] ?? 0, curP = pres[0] ?? 0;
-  const avgH = hum.length ? (hum.reduce((a, b) => a + b, 0) / hum.length).toFixed(0) : "—";
-  const sparkH = hum.slice(0, 24);
-  const sparkP = pres.slice(0, 24);
-  const mkPath = (arr, h, pad) => {
-    if (!arr.length) return "";
-    const mn = Math.min(...arr), mx = Math.max(...arr), span = mx - mn;
-    if (span < 1e-9) {
-      // Flat line (no variation): center it instead of faking a slope.
-      const y = (h / 2).toFixed(1);
-      return arr.map((_, i) => `${(i / Math.max(1, arr.length - 1)) * 100},${y}`).join(" ");
-    }
-    return arr.map((v, i) => `${(i / Math.max(1, arr.length - 1)) * 100},${h - pad - ((v - mn) / span) * (h - pad * 2)}`).join(" ");
-  };
-  elAir.innerHTML = `
-    <div class="sunuv__head"><span class="sunuv__title">${tr("air_title")}</span><span class="sunuv__muted">${avgH}% · ${curP ? Math.round(curP) : "—"} hPa</span></div>
-    <div class="air__grid">
-      <div class="air__box"><div class="air__label">💧 ${tr("var_hum")} · ${curH ? Math.round(curH) + "%" : "—"}</div><svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="#3b82f6" stroke-width="2" points="${mkPath(sparkH, 30, 6)}"/></svg></div>
-      <div class="air__box"><div class="air__label">🔵 ${tr("var_press")} · ${curP ? Math.round(curP) : "—"} hPa</div><svg viewBox="0 0 100 30" class="spark"><polyline fill="none" stroke="#10b981" stroke-width="2" points="${mkPath(sparkP, 30, 6)}"/></svg></div>
-    </div>`;
+  if (elAir) elAir.hidden = true;
 }
 
 /* Local station badge: a number, the words live in the tooltip. */
@@ -1120,8 +1154,8 @@ function renderTimeline(times, byTime, graph = state.graph) {
   renderVerdict(times, byTime);
 
   const W = Math.max(chart.clientWidth || 600, 280);
-  const H = 240;
-  const padL = 38, padR = 10, padT = 52, padB = 26;
+  const H = 300;
+  const padL = 38, padR = 10, padT = 56, padB = 26;
   const rainH = graph === "precipitation" ? 0 : 42; // rain has its own curve, no bar zone
   const n = times.length;
   const colW = (W - padL - padR) / Math.max(n, 1);
@@ -1252,19 +1286,46 @@ function renderTimeline(times, byTime, graph = state.graph) {
       parts.push(`<path d="${line}" fill="none" stroke="${base}" stroke-width="2.5" stroke-linecap="round"/>`);
     }
     const tStep = Math.max(1, Math.ceil(40 / Math.max(colW, 1)));
+    // Wind tab: flow arrow beside each labeled point (direction the wind
+    // GOES TO = reported direction + 180).
+    const windDirs = graph === "wind_speed_10m"
+      ? rows.map((r) => r.wind_direction_10m?.value)
+      : null;
     pts.forEach((p, i) => {
       const col = graph === "temperature_2m" ? cFn(p[2]) : base;
       if (i % tStep === 0) {
         parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col}">${round(p[2])}${suf}</text>`);
+        if (windDirs && windDirs[i] != null) {
+          const a = ((windDirs[i] + 180) % 360).toFixed(0);
+          parts.push(`<text x="${p[0].toFixed(1)}" y="${(p[1] + 16).toFixed(1)}" text-anchor="middle" class="mg-windarrow" transform="rotate(${a} ${p[0].toFixed(1)} ${(p[1] + 16).toFixed(1)})">➤</text>`);
+        }
       }
       parts.push(`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.2" fill="${col}" style="stroke:var(--dot-stroke)"/>`);
     });
+    // Global min & max always labeled (max above, min below the curve) so a
+    // 7-day view shows every peak, not just sampled points.
+    if (pts.length > 2) {
+      let iMin = 0, iMax = 0;
+      pts.forEach((p, i) => {
+        if (p[2] < pts[iMin][2]) iMin = i;
+        if (p[2] > pts[iMax][2]) iMax = i;
+      });
+      const labeled = new Set();
+      pts.forEach((p, i) => { if (i % tStep === 0) labeled.add(i); });
+      const col = (i) => (graph === "temperature_2m" ? cFn(pts[i][2]) : base);
+      if (!labeled.has(iMax)) {
+        parts.push(`<text x="${pts[iMax][0].toFixed(1)}" y="${(yFor(pts[iMax][2]) - 7).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col(iMax)}">▲ ${round(pts[iMax][2])}${suf}</text>`);
+      }
+      if (!labeled.has(iMin) && iMin !== iMax) {
+        parts.push(`<text x="${pts[iMin][0].toFixed(1)}" y="${(yFor(pts[iMin][2]) + 16).toFixed(1)}" text-anchor="middle" class="mg-temp" fill="${col(iMin)}">▼ ${round(pts[iMin][2])}${suf}</text>`);
+      }
+    }
   }
 
-  // "Now" marker on the first column (label below the icon row).
+  // "Now" dashed marker on the first column (text label removed: it covered
+  // the curve values).
   parts.push(
-    `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>` +
-    `<text x="${(xAt(0) + 5).toFixed(1)}" y="${((padT + yBase) / 2 + 3).toFixed(1)}" class="mg-now" font-size="11">${tr("now_label")}</text>`
+    `<line x1="${xAt(0).toFixed(1)}" y1="${padT - 8}" x2="${xAt(0).toFixed(1)}" y2="${yBase}" stroke="#2f6bff" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/>`
   );
 
   chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="${escHtml(tr("mg_title"))}">${parts.join("")}</svg>`;
@@ -1293,8 +1354,12 @@ function renderHours(times, byTime) {
     const prob = row.precipitation_probability;
     const wind = row.wind_speed_10m;
     const gust = row.wind_gusts_10m;
-    const confs = VAR_ORDER.filter((v) => row[v] && row[v].calibrated).map((v) => row[v].confidence);
-    const avgConf = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
+    const press = row.pressure_msl;
+    const uv = row.uv_index;
+    // Confidence of this hour: calibrated values when present, otherwise
+    // the inter-model agreement (local mode) — never blank.
+    const confsAll = VAR_ORDER.filter((v) => row[v] && row[v].confidence != null).map((v) => row[v].confidence);
+    const avgConf = confsAll.length ? confsAll.reduce((a, b) => a + b, 0) / confsAll.length : null;
     const cal = !!(row.temperature_2m && row.temperature_2m.calibrated);
     // The date is shown once per day, not on every card: repeated labels
     // turn the grid into noise.
@@ -1322,7 +1387,10 @@ function renderHours(times, byTime) {
       <div class="hour__range">${rng}</div>
       <div class="hour__row">${probVal > 0 ? `💧 ${round(probVal, 0)}%` : '<span class="hour__dry">' + tr("dry") + '</span>'}</div>
       <div class="hour__row">${wind ? `<span class="hour__windarrow" style="transform:rotate(${wd ? (wd.deg + 180) % 360 : 0}deg)">➤</span> ${kmh(wind)}${gust ? `${" · " + tr("raf") + " "}${Math.round(gust.value * 3.6)}` : ""}${wd ? ` <span class="hour__from">${wd.from}</span>` : ""}` : ""}</div>
+      ${press ? `<div class="hour__row">🔵 ${Math.round(press.value)} hPa</div>` : ""}
+      ${uv && uv.value != null ? `<div class="hour__row">☀️ UV ${round(uv.value, 0)}</div>` : ""}
       <div class="hour__rainbar"><span style="width:${Math.min(probVal, 100)}%"></span></div>
+      ${avgConf != null ? `<div class="hour__row">🎯 ${Math.round(avgConf * 100)}%</div>` : ""}
       ${confBadge(avgConf, cal)}`;
     wrap.appendChild(card);
   }
@@ -1383,7 +1451,12 @@ function renderSources(data) {
     tb.appendChild(tr);
   }
   // Consensus row (named `crow`: a local `tr` would shadow the i18n tr()).
-  const first = data.forecast.find((i) => i.variable === "temperature_2m");
+  // It MUST be the consensus AT the breakdown hour: raw values above come
+  // from that hour, comparing them to another hour's value is nonsense.
+  const atHour = data.breakdown_valid_at;
+  const first =
+    (atHour && data.forecast.find((i) => i.variable === "temperature_2m" && i.valid_at === atHour)) ||
+    data.forecast.find((i) => i.variable === "temperature_2m");
   if (first) {
     const crow = document.createElement("tr");
     crow.style.fontWeight = "700";
@@ -1468,6 +1541,14 @@ $("#locate-btn").addEventListener("click", async () => {
 });
 
 $("#fav-btn").addEventListener("click", toggleFavorite);
+
+/* Manual refresh: drop the memoized response for this cell and refetch
+   (backend reruns the fusion; standalone refetches the models). */
+document.getElementById("refresh-btn")?.addEventListener("click", () => {
+  dataCache.delete(cacheKey());
+  partialTries.delete(cacheKey());
+  loadForecast();
+});
 
 $("#fav-open").addEventListener("click", () => {
   const menu = el("fav-list");
@@ -1568,6 +1649,7 @@ function initMap() {
   map.on("moveend", () => {
     clearTimeout(windTimer);
     windTimer = setTimeout(refreshWindArrows, 600);
+    scheduleLocalModelRefresh(900);
   });
 }
 
@@ -1743,9 +1825,9 @@ function centerMapOn(lat, lon, name) {
 /* Switch the map overlay: live radar, Open-Meteo model tiles (temperature /
    precipitation), or plain streets (no overlay). Model tiles are rendered
    server-side from the model API and cached, so panning is cheap.
-   Standalone (no backend): model layers unavailable, coerce to radar. */
+   Standalone (no backend): the same layers render on-device from a viewport
+   grid (see refreshLocalModelLayer). */
 function applyMapLayer() {
-  if (backendDown && !["radar", "streets"].includes(mapLayer)) mapLayer = "radar";
   if (radarLayer) {
     map.removeLayer(radarLayer);
     radarLayer = null;
@@ -1782,12 +1864,7 @@ function applyMapLayer() {
   };
   const label = layerLabels[mapLayer] || mapLayer;
   el("radar-status").textContent = label;
-  modelLayer = L.tileLayer(`/tile/${mapLayer}/{z}/{x}/{y}.png`, {
-    opacity: 0.88,
-    maxNativeZoom: 9, // model grid ~11 km: beyond z9 the backend upscales
-    maxZoom: 18,
-  }).addTo(map);
-  // légende détaillée par paramètre
+  // légende détaillée par paramètre (backend comme on-device: mêmes plages)
   const lg = document.getElementById("map-legend");
   if (lg) {
     const legends = {
@@ -1801,12 +1878,67 @@ function applyMapLayer() {
     lg.innerHTML = legends[mapLayer] || "";
     lg.hidden = !legends[mapLayer];
   }
+  // Standalone: same layer, sampled on-device over the viewport.
+  if (backendDown) {
+    refreshLocalModelLayer();
+    return;
+  }
+  modelLayer = L.tileLayer(`/tile/${mapLayer}/{z}/{x}/{y}.png`, {
+    opacity: 0.88,
+    maxNativeZoom: 9, // model grid ~11 km: beyond z9 the backend upscales
+    maxZoom: 18,
+  }).addTo(map);
 }
 
 $("#map-layer").addEventListener("change", (e) => {
   mapLayer = e.target.value;
   applyMapLayer();
 });
+
+/* On-device model overlay: sample the layer variable on a grid over the
+   viewport, color it with the backend's LUTs, and pin it as an imageOverlay
+   that pans/zooms with the map. Refreshed (debounced) on every moveend. */
+let localGridSeq = 0;
+let localGridTimer = null;
+function scheduleLocalModelRefresh(ms = 800) {
+  clearTimeout(localGridTimer);
+  localGridTimer = setTimeout(() => { refreshLocalModelLayer(); }, ms);
+}
+async function refreshLocalModelLayer() {
+  if (!map || backendDown !== true) return;
+  if (!window.SureLocal?.modelGrid) return;
+  if (!["temp", "precip", "uv", "humidity", "cloud", "pressure"].includes(mapLayer)) return;
+  const seq = ++localGridSeq;
+  const layer = mapLayer;
+  const b = map.getBounds();
+  try {
+    const g = await window.SureLocal.modelGrid(
+      layer, b.getNorth(), b.getWest(), b.getSouth(), b.getEast(), 12
+    );
+    if (seq !== localGridSeq || layer !== mapLayer) return;
+    const n = g.n;
+    const raw = document.createElement("canvas");
+    raw.width = n; raw.height = n;
+    const rctx = raw.getContext("2d");
+    const img = rctx.createImageData(n, n);
+    for (let i = 0; i < n * n; i++) {
+      const [r, gg, bb, a] = window.SureLocal.lutColor(layer, g.grid[i]);
+      img.data[i * 4] = r; img.data[i * 4 + 1] = gg;
+      img.data[i * 4 + 2] = bb; img.data[i * 4 + 3] = a;
+    }
+    rctx.putImageData(img, 0, 0);
+    const big = document.createElement("canvas");
+    big.width = 256; big.height = 256;
+    const bctx = big.getContext("2d");
+    bctx.imageSmoothingEnabled = true;
+    bctx.drawImage(raw, 0, 0, 256, 256);
+    if (seq !== localGridSeq || layer !== mapLayer) return;
+    if (modelLayer) map.removeLayer(modelLayer);
+    modelLayer = L.imageOverlay(big.toDataURL(), [[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]], {
+      opacity: 0.75, interactive: false,
+    }).addTo(map);
+  } catch { /* decorative: never break the map */ }
+}
 
 /* ---- Wind arrows overlay ---- */
 function windColor(kmh) {

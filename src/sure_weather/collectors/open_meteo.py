@@ -144,9 +144,7 @@ class OpenMeteoCollector:
                     }
                     for m, fut in futs.items():
                         try:
-                            samples.extend(
-                                self._samples_from(fut.result(), [m], cell)
-                            )
+                            samples.extend(self._samples_from(fut.result(), [m], cell))
                         except httpx.HTTPError:
                             continue
         return samples
@@ -201,9 +199,15 @@ class OpenMeteoCollector:
             },
         )
         daily = data.get("daily") or {}
+        # Requested with timezone=UTC: the strings ARE UTC, but Open-Meteo
+        # omits the suffix — browsers would parse them as browser-local
+        # (sun 2h off in France). Stamp them explicitly.
+        constamp = lambda xs: [
+            x if x.endswith(("Z", "+")) else x + "Z" for x in (xs or [])
+        ]
         return {
-            "sunrise": daily.get("sunrise") or [],
-            "sunset": daily.get("sunset") or [],
+            "sunrise": constamp(daily.get("sunrise")),
+            "sunset": constamp(daily.get("sunset")),
         }
 
     def fetch_historical(
