@@ -589,6 +589,17 @@ function showSkeletons(name) {
 const forceLocal = new URLSearchParams(location.search).get("local") === "1";
 let backendDown = forceLocal;
 
+/* True when the backend is really absent (not just slow): network errors,
+   aborts, non-JSON bodies (Capacitor's SPA fallback serves index.html with
+   HTTP 200 for unknown paths — a bare r.ok check would false-positive). */
+function isBackendDead(e) {
+  if (!e) return false;
+  if (e instanceof TypeError) return true; // network failure
+  if (e.name === "AbortError") return false; // slow backend, not dead
+  const msg = String(e.message || "");
+  return /Failed to fetch|NetworkError|Load failed|Unexpected token|is not valid JSON|JSON/i.test(msg);
+}
+
 async function probeBackend() {
   if (forceLocal) return;
   try {
@@ -596,7 +607,15 @@ async function probeBackend() {
     const t = setTimeout(() => ctrl.abort(), 4000);
     const r = await fetch("/health", { signal: ctrl.signal });
     clearTimeout(t);
-    backendDown = !r.ok;
+    // Must be real JSON {"status":"ok"} — HTML with status 200 (SPA
+    // fallback, captive portal, proxy login) is NOT a backend.
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    if (!r.ok || !ct.includes("application/json")) {
+      backendDown = true;
+    } else {
+      const body = await r.json().catch(() => null);
+      backendDown = !body || body.status !== "ok";
+    }
   } catch {
     backendDown = true;
   }
@@ -645,6 +664,11 @@ async function loadForecast() {
       clearInterval(tick);
       if (token !== reqToken) return;
       if (!r.ok) throw new Error(`API ${r.status}`);
+      const ct = (r.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json")) {
+        // HTML with HTTP 200 (SPA fallback / captive portal): no backend.
+        throw new TypeError("backend returned HTML instead of JSON");
+      }
       const data = await r.json();
       if (!data.forecast || !data.forecast.length) {
         hide(el("loading"));
@@ -675,9 +699,9 @@ async function loadForecast() {
       if (token !== reqToken) return;
       const timedOut = e.name === "AbortError";
       if (timedOut && attempt === 1) continue; // transparent retry
-      // Backend unreachable (TypeError = network): switch to on-device
-      // fusion for this session instead of dead-ending.
-      if (!timedOut && (e instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(e.message || ""))) {
+      // Backend unreachable or impersonated (SPA fallback HTML, proxy
+      // login): switch to on-device fusion instead of dead-ending.
+      if (!timedOut && isBackendDead(e)) {
         backendDown = true;
         initLocalModeUI();
         await loadForecastLocal(token, key, cached);
