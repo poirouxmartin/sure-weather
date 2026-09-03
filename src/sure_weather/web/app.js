@@ -427,9 +427,13 @@ async function geocode(query) {
   } catch {
     /* fall through to address geocoder */
   }
-  const g = await fetch(`/geocode?q=${encodeURIComponent(query)}&limit=1`);
-  if (!g.ok) throw new Error(`adresse introuvable`);
-  const gd = await g.json();
+  // Standalone (no backend proxy): query Nominatim directly (CORS-open).
+  const gd = backendDown
+    ? await window.SureLocal.geocodeNominatim(query)
+    : await fetch(`/geocode?q=${encodeURIComponent(query)}&limit=1`).then((g) => {
+      if (!g.ok) throw new Error(`adresse introuvable`);
+      return g.json();
+    });
   if (!gd.results || !gd.results.length) throw new Error(tr("err_notfound"));
   const hit = gd.results[0];
   return { lat: hit.lat, lon: hit.lon, name: hit.name };
@@ -578,6 +582,27 @@ function showSkeletons(name) {
   hide(el("empty"));
 }
 
+/* Standalone mode (APK without the PC server): the on-device provider
+   fuses Open-Meteo models directly on the phone. Auto-detected: ?local=1
+   forces it, otherwise the first backend failure (or a failed /health
+   probe at boot) switches over for the whole session. */
+const forceLocal = new URLSearchParams(location.search).get("local") === "1";
+let backendDown = forceLocal;
+
+async function probeBackend() {
+  if (forceLocal) return;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch("/health", { signal: ctrl.signal });
+    clearTimeout(t);
+    backendDown = !r.ok;
+  } catch {
+    backendDown = true;
+  }
+  if (backendDown) initLocalModeUI();
+}
+
 async function loadForecast() {
   const token = ++reqToken;
   const key = cacheKey();
@@ -587,6 +612,11 @@ async function loadForecast() {
   if (cached) render(cached, state.hours); // instant paint, then refresh
   else show(el("loading"));
   hide(el("error"));
+  // No backend (APK standalone / server down): fuse on-device.
+  if (backendDown) {
+    await loadForecastLocal(token, key, cached);
+    return;
+  }
   const spinner = el("loading");
   const status = spinner.querySelector("#load-status");
   const progress = [
@@ -645,12 +675,63 @@ async function loadForecast() {
       if (token !== reqToken) return;
       const timedOut = e.name === "AbortError";
       if (timedOut && attempt === 1) continue; // transparent retry
+      // Backend unreachable (TypeError = network): switch to on-device
+      // fusion for this session instead of dead-ending.
+      if (!timedOut && (e instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(e.message || ""))) {
+        backendDown = true;
+        initLocalModeUI();
+        await loadForecastLocal(token, key, cached);
+        return;
+      }
       hide(el("loading"));
       if (!cached) hide(el("content"));
       showError(timedOut ? tr("err_slow") : e.message);
       return;
     }
   }
+}
+
+/* On-device forecast: same render path, data fused on the phone. */
+async function loadForecastLocal(token, key, cached) {
+  const spinner = el("loading");
+  const status = spinner.querySelector("#load-status");
+  try {
+    syncUrl();
+    if (status) status.textContent = tr("loading_cross");
+    const data = await window.SureLocal.forecast(state.lat, state.lon, 168);
+    if (token !== reqToken) return;
+    if (!data.forecast || !data.forecast.length) {
+      hide(el("loading"));
+      if (!cached) {
+        hide(el("content"));
+        show(el("empty"));
+      }
+      return;
+    }
+    dataCache.set(key, data);
+    if (dataCache.size > 24) dataCache.delete(dataCache.keys().next().value);
+    partialTries.delete(key);
+    hide(el("loading"));
+    render(data, state.hours);
+  } catch (e) {
+    if (token !== reqToken) return;
+    hide(el("loading"));
+    if (!cached) hide(el("content"));
+    showError(e.name === "AbortError" ? tr("err_slow") : e.message);
+  }
+}
+
+/* Standalone UI: model-tile layers need the backend renderer — keep live
+   radar (direct RainViewer) + streets. Called once when backendDown flips. */
+function initLocalModeUI() {
+  const sel = document.getElementById("map-layer");
+  if (sel) {
+    for (const opt of sel.options) {
+      if (!["radar", "streets"].includes(opt.value)) opt.disabled = true;
+    }
+    if (!["radar", "streets"].includes(sel.value)) sel.value = "radar";
+  }
+  mapLayer = "radar";
 }
 
 function showError(message) {
@@ -1464,9 +1545,13 @@ async function loadRadar() {
   const status = el("radar-status");
   const token = reqToken; // stale guard: a fast place switch must not let the old radar win
   try {
-    const r = await fetch("/radar");
-    if (!r.ok) throw new Error(`radar ${r.status}`);
-    const d = await r.json();
+    // Standalone: RainViewer directly (CORS-open), no backend proxy.
+    const d = backendDown
+      ? await window.SureLocal.radar()
+      : await fetch("/radar").then(async (r) => {
+        if (!r.ok) throw new Error(`radar ${r.status}`);
+        return r.json();
+      });
     if (token !== reqToken) return;
     const all = [...(d.radar?.past || []), ...(d.radar?.nowcast || [])];
     if (!all.length) {
@@ -1479,17 +1564,20 @@ async function loadRadar() {
       time: f.time,
       isNowcast: (f.path || "").includes("nowcast"),
     }));
-    // Future frames: the free radar feed stops at the last observation, so
-    // the model takes over — one synthesized frame per hour ahead, rendered
-    // from our own precipitation tiles (coarser ~10 km, labeled "prévision").
-    const lastT = radarFrames[radarFrames.length - 1]?.time ?? Math.floor(Date.now() / 1000);
-    for (let h = 1; h <= 6; h++) {
-      radarFrames.push({
-        model: true,
-        hourOffset: h,
-        time: lastT + h * 3600,
-        isNowcast: true,
-      });
+    // Future frames (backend only): the free radar feed stops at the last
+    // observation, so the model takes over — one synthesized frame per hour
+    // ahead, rendered from our own precipitation tiles. Standalone has no
+    // tile renderer: live radar only.
+    if (!backendDown) {
+      const lastT = radarFrames[radarFrames.length - 1]?.time ?? Math.floor(Date.now() / 1000);
+      for (let h = 1; h <= 6; h++) {
+        radarFrames.push({
+          model: true,
+          hourOffset: h,
+          time: lastT + h * 3600,
+          isNowcast: true,
+        });
+      }
     }
     // Fresh frame index: cached layers point at stale tile paths.
     for (const k of Object.keys(radarLayerCache)) {
@@ -1510,7 +1598,8 @@ async function loadRadar() {
     if (!radarPlaying && mapLayer === "radar") showRadarFrame(radarFrames.length - 1);
     // Warm the model tiles (server + browser cache) so the first playback
     // through the +1h..+6h forecast doesn't stall on blank tiles.
-    if (map && mapLayer === "radar") {
+    // Standalone: no tile renderer, nothing to warm.
+    if (map && mapLayer === "radar" && !backendDown) {
       const z = map.getZoom(), c = map.getCenter();
       const n = 1 << z;
       const tx = Math.floor(((c.lng + 180) / 360) * n);
@@ -1623,8 +1712,10 @@ function centerMapOn(lat, lon, name) {
 
 /* Switch the map overlay: live radar, Open-Meteo model tiles (temperature /
    precipitation), or plain streets (no overlay). Model tiles are rendered
-   server-side from the model API and cached, so panning is cheap. */
+   server-side from the model API and cached, so panning is cheap.
+   Standalone (no backend): model layers unavailable, coerce to radar. */
 function applyMapLayer() {
+  if (backendDown && !["radar", "streets"].includes(mapLayer)) mapLayer = "radar";
   if (radarLayer) {
     map.removeLayer(radarLayer);
     radarLayer = null;
@@ -1701,11 +1792,15 @@ async function refreshWindArrows() {
   const seq = ++windSeq; // last response wins: pans fire overlapping fetches
   const placeToken = reqToken;
   const b = map.getBounds();
-  const url = `/wind-grid?lat_n=${b.getNorth().toFixed(3)}&lon_w=${b.getWest().toFixed(3)}&lat_s=${b.getSouth().toFixed(3)}&lon_e=${b.getEast().toFixed(3)}&n=6`;
+  const q = `lat_n=${b.getNorth().toFixed(3)}&lon_w=${b.getWest().toFixed(3)}&lat_s=${b.getSouth().toFixed(3)}&lon_e=${b.getEast().toFixed(3)}&n=6`;
   try {
-    const r = await fetch(url);
-    if (!r.ok) return;
-    const { points } = await r.json();
+    // Standalone: Open-Meteo multi-location current wind, direct.
+    const { points } = backendDown
+      ? await window.SureLocal.windGrid(b.getNorth(), b.getWest(), b.getSouth(), b.getEast(), 6)
+      : await fetch(`/wind-grid?${q}`).then(async (r) => {
+        if (!r.ok) return { points: [] };
+        return r.json();
+      });
     if (seq !== windSeq || placeToken !== reqToken) return;
     if (windLayer) map.removeLayer(windLayer);
     windLayer = L.layerGroup();
@@ -1755,6 +1850,9 @@ $("#radar-slider").addEventListener("input", (e) => {
     b.classList.toggle("graph-tab--active", b.dataset.graph === state.graph);
   });
 })();
+// Standalone (?local=1 / APK): skip the backend probe, go on-device now.
+if (forceLocal) initLocalModeUI();
+else probeBackend().finally(() => { if (backendDown) initLocalModeUI(); });
 loadForecast();
 renderFavorites();
 // The map and radar initialize inside render(), once `#content` is visible:
