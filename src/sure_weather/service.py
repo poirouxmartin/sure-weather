@@ -196,10 +196,10 @@ class WeatherService:
         corrects a residual without changing MAX/COUNT still invalidates.
         Reads go through the storage lock (see Storage.tx / locked reads).
         """
-        row = self.storage.locked_execute(
+        row = self.storage.locked_fetchone(
             "SELECT MAX(valid_at), COUNT(*), COALESCE(SUM(rowid),0) FROM residuals WHERE valid_at >= ?",
             (since.isoformat(),),
-        ).fetchone()
+        )
         return (row[0] or "", int(row[1] or 0), int(row[2] or 0))
 
     def _load_stats(self) -> dict[tuple[str, str, str, float], ProviderStat]:
