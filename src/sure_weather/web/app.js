@@ -869,6 +869,19 @@ function render(data, hours = state.hours) {
   }
 
   el("loc-name").textContent = state.name;
+  // Android widget: publish the current place to native prefs (best-effort,
+  // Capacitor only — the widget reads them for its own refresh).
+  try {
+    window.Capacitor?.Plugins?.Preferences?.set({
+      key: "sw_widget_lat", value: String(state.lat),
+    }).catch(() => {});
+    window.Capacitor?.Plugins?.Preferences?.set({
+      key: "sw_widget_lon", value: String(state.lon),
+    }).catch(() => {});
+    window.Capacitor?.Plugins?.Preferences?.set({
+      key: "sw_widget_name", value: state.name.slice(0, 60),
+    }).catch(() => {});
+  } catch { /* no native bridge (browser/PWA) */ }
   // When the fusion ran: honest staleness indicator next to the place name.
   try {
     el("computed-at").textContent = data.generated_at

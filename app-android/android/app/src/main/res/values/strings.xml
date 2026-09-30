@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Sure Weather</string>
+    <string name="title_activity_main">Sure Weather</string>
+    <string name="package_name">com.sureweather.app</string>
+    <string name="custom_url_scheme">com.sureweather.app</string>
+    <string name="widget_desc">Sure Weather — température actuelle du dernier lieu consulté</string>
+</resources>
