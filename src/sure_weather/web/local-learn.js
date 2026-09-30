@@ -73,7 +73,8 @@ window.SureLearn = (() => {
           if (v === null || v === undefined || !Number.isFinite(v)) continue;
           const key = `${cell}|${variable}|${times[i]}`;
           const slot = s.preds[key] || (s.preds[key] = {});
-          slot[pm.model] = [Math.round(v * 100) / 100, at];
+          // 1 decimal is plenty for bias learning and halves storage.
+          slot[pm.model] = [Math.round(v * 10) / 10, at];
           touched = true;
         }
       }

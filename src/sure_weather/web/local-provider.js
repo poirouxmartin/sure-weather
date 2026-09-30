@@ -301,14 +301,19 @@ window.SureLocal = (() => {
       const b0 = bTimes.find((t) => new Date(t).getTime() >= now.getTime() - 30 * 60e3) || bTimes[0];
       const breakdown = [...(breakdownByTime[b0] || [])].sort((a, b) => b.weight - a.weight);
       const flat = Math.round(lat / 0.1) * 0.1, flon = Math.round(lon / 0.1) * 0.1;
-      // Feed the learner: record raw per-model series, then refresh biases
-      // in the background (throttled to 6h, never blocking the forecast).
+      // Feed the learner AFTER render (never on the critical path: the
+      // stringify + localStorage write of ~2 MB would ANR slow phones).
       try {
         if (window.SureLearn) {
-          window.SureLearn.record(lat, lon, times, perModel, HOURLY, seriesOf);
-          if (window.SureLearn.shouldLearn() && navigator.onLine !== false) {
-            window.SureLearn.learnTruth(lat, lon, ctrl.signal).catch(() => {});
-          }
+          const L = window.SureLearn;
+          setTimeout(() => {
+            try {
+              L.record(lat, lon, times, perModel, HOURLY, seriesOf);
+              if (L.shouldLearn() && navigator.onLine !== false) {
+                L.learnTruth(lat, lon, undefined).catch(() => {});
+              }
+            } catch { /* learning is best-effort */ }
+          }, 2500);
         }
       } catch { /* learning is best-effort */ }
       return {
