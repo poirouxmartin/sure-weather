@@ -46,3 +46,4 @@ app-android/android/app/src/main/res/xml/*
 !app-android/android/app/src/main/res/xml/weather_widget_info.xml
 app-android/android/app/src/main/res/drawable/*
 !app-android/android/app/src/main/res/drawable/widget_bg.xml
+!app-android/android/app/src/main/res/drawable/widget_chip.xml
