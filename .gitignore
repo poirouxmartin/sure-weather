@@ -38,10 +38,17 @@ app-android/android/app/src/main/res/*
 !app-android/android/app/src/main/res/values
 !app-android/android/app/src/main/res/xml
 !app-android/android/app/src/main/res/drawable
+!app-android/android/app/src/main/res/mipmap-mdpi
+!app-android/android/app/src/main/res/mipmap-hdpi
+!app-android/android/app/src/main/res/mipmap-xhdpi
+!app-android/android/app/src/main/res/mipmap-xxhdpi
+!app-android/android/app/src/main/res/mipmap-xxxhdpi
+!app-android/android/app/src/main/res/mipmap-anydpi-v26
 app-android/android/app/src/main/res/layout/*
 !app-android/android/app/src/main/res/layout/widget_weather.xml
 app-android/android/app/src/main/res/values/*
 !app-android/android/app/src/main/res/values/strings.xml
+!app-android/android/app/src/main/res/values/ic_launcher_background.xml
 app-android/android/app/src/main/res/xml/*
 !app-android/android/app/src/main/res/xml/weather_widget_info.xml
 app-android/android/app/src/main/res/drawable/*
