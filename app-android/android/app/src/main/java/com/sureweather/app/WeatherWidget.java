@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.widget.RemoteViews;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -20,6 +21,11 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.view.View;
 
 /**
  * Home-screen widget: current temperature + condition for the last place
@@ -63,9 +69,15 @@ public class WeatherWidget extends AppWidgetProvider {
 
         POOL.execute(() -> {
             String temp = "--", icon = "\u2601\uFE0F", desc = "";
+            String[] hTime = new String[0];
+            double[] hTemp = new double[0];
+            int[] hCode = new int[0];
+            double[] hProb = new double[0];
             try {
                 URL url = new URL("https://api.open-meteo.com/v1/forecast?latitude=" + fLat
-                        + "&longitude=" + fLon + "&current=temperature_2m,weather_code&timezone=auto&forecast_days=1");
+                        + "&longitude=" + fLon
+                        + "&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability"
+                        + "&timezone=auto&forecast_days=2");
                 HttpURLConnection c = (HttpURLConnection) url.openConnection();
                 c.setConnectTimeout(12000);
                 c.setReadTimeout(12000);
@@ -76,13 +88,40 @@ public class WeatherWidget extends AppWidgetProvider {
                         String line;
                         while ((line = br.readLine()) != null) sb.append(line);
                         br.close();
-                        JSONObject cur = new JSONObject(sb.toString()).getJSONObject("current");
+                        JSONObject root = new JSONObject(sb.toString());
+                        JSONObject cur = root.getJSONObject("current");
                         double t = cur.getDouble("temperature_2m");
                         int code = cur.optInt("weather_code", 3);
                         temp = String.valueOf(Math.round(t)) + "\u00B0";
                         String[] cond = conditionFor(code);
                         icon = cond[0];
                         desc = cond[1];
+                        JSONObject hourly = root.optJSONObject("hourly");
+                        if (hourly != null) {
+                            JSONArray times = hourly.optJSONArray("time");
+                            JSONArray temps = hourly.optJSONArray("temperature_2m");
+                            JSONArray codes = hourly.optJSONArray("weather_code");
+                            JSONArray probs = hourly.optJSONArray("precipitation_probability");
+                            String nowPrefix = cur.optString("time", "").substring(0, Math.min(13, cur.optString("time", "").length()));
+                            int start = 0;
+                            if (times != null) {
+                                for (int i = 0; i < times.length(); i++) {
+                                    if (times.optString(i, "").startsWith(nowPrefix)) { start = i; break; }
+                                    start = i;
+                                }
+                                int count = Math.min(12, times.length() - start);
+                                hTime = new String[count];
+                                hTemp = new double[count];
+                                hCode = new int[count];
+                                hProb = new double[count];
+                                for (int i = 0; i < count; i++) {
+                                    hTime[i] = times.optString(start + i, "");
+                                    hTemp[i] = temps != null ? temps.optDouble(start + i, Double.NaN) : Double.NaN;
+                                    hCode[i] = codes != null ? codes.optInt(start + i, 3) : 3;
+                                    hProb[i] = probs != null ? probs.optDouble(start + i, 0) : 0;
+                                }
+                            }
+                        }
                     }
                 } finally {
                     c.disconnect();
@@ -92,7 +131,10 @@ public class WeatherWidget extends AppWidgetProvider {
             }
             String when;
             try {
-                when = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
+                Date now = new Date();
+                String hm = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(now);
+                String day = new SimpleDateFormat("EEE d MMM", Locale.FRENCH).format(now);
+                when = day + " · " + hm;
             } catch (Exception e) {
                 when = "";
             }
@@ -103,10 +145,60 @@ public class WeatherWidget extends AppWidgetProvider {
             v.setTextViewText(R.id.widget_icon, icon);
             v.setTextViewText(R.id.widget_desc, desc);
             v.setTextViewText(R.id.widget_when, when);
+            // +1h … +6h strip (fixed slots, hidden when missing).
+            int[] idsTime = {R.id.h0_time, R.id.h1_time, R.id.h2_time, R.id.h3_time, R.id.h4_time, R.id.h5_time};
+            int[] idsIcon = {R.id.h0_icon, R.id.h1_icon, R.id.h2_icon, R.id.h3_icon, R.id.h4_icon, R.id.h5_icon};
+            int[] idsTemp = {R.id.h0_temp, R.id.h1_temp, R.id.h2_temp, R.id.h3_temp, R.id.h4_temp, R.id.h5_temp};
+            int[] idsBox = {R.id.h0, R.id.h1, R.id.h2, R.id.h3, R.id.h4, R.id.h5};
+            for (int i = 0; i < 6; i++) {
+                int h = i + 1;
+                if (h < hTime.length && hTime[h] != null && hTime[h].length() >= 13 && !Double.isNaN(hTemp[h])) {
+                    v.setViewVisibility(idsBox[i], View.VISIBLE);
+                    v.setTextViewText(idsTime[i], hTime[h].substring(11, 13) + "h");
+                    v.setTextViewText(idsIcon[i], conditionFor(hCode[h])[0]);
+                    v.setTextViewText(idsTemp[i], String.valueOf(Math.round(hTemp[h])) + "\u00B0");
+                } else {
+                    v.setViewVisibility(idsBox[i], View.GONE);
+                }
+            }
+            // Mini rain radar: next-12h precipitation-probability bars.
+            try {
+                v.setImageViewBitmap(R.id.widget_rain, rainBitmap(hProb, hTime));
+            } catch (Exception ignored) {}
             try {
                 manager.updateAppWidget(appWidgetId, v);
             } catch (Exception ignored) {}
         });
+    }
+
+    /** 12-bar precipitation-probability chart drawn on a Bitmap. */
+    static Bitmap rainBitmap(double[] probs, String[] times) {
+        int W = 360, H = 92;
+        Bitmap bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        Paint bar = new Paint();
+        bar.setColor(0xFF60A5FA);
+        Paint barHi = new Paint();
+        barHi.setColor(0xFF2563EB);
+        Paint axis = new Paint();
+        axis.setColor(0x44FFFFFF);
+        Paint txt = new Paint();
+        txt.setColor(0xFF9FB3CC);
+        txt.setTextSize(20f);
+        int n = Math.max(probs != null ? probs.length : 0, 1);
+        float slot = (float) W / 12;
+        for (int i = 0; i < 12; i++) {
+            double p = (i < probs.length) ? Math.max(0, Math.min(100, probs[i])) : 0;
+            float h = (float) (p / 100.0 * 58);
+            float left = i * slot + 3;
+            float right = (i + 1) * slot - 3;
+            c.drawRect(left, 66 - h, right, 66, p >= 50 ? barHi : bar);
+            if (times != null && i < times.length && times[i] != null && times[i].length() >= 13 && i % 3 == 0) {
+                c.drawText(times[i].substring(11, 13) + "h", left, 88, txt);
+            }
+        }
+        c.drawLine(0, 66, W, 66, axis);
+        return bmp;
     }
 
     /** WMO weather-code → {emoji, short French label}. */
