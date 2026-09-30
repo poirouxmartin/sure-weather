@@ -241,7 +241,10 @@ public class WeatherWidget extends AppWidgetProvider {
             }
             try {
                 manager.updateAppWidget(appWidgetId, v);
-            } catch (Exception ignored) {}
+                android.util.Log.d(TAG, "updated id=" + appWidgetId + " temp=" + temp);
+            } catch (Exception e) {
+                android.util.Log.w(TAG, "updateAppWidget failed: " + e);
+            }
         });
     }
 
@@ -274,6 +277,15 @@ public class WeatherWidget extends AppWidgetProvider {
             Paint paint = new Paint();
             for (int dx = 0; dx < 2; dx++) {
                 for (int dy = 0; dy < 2; dy++) {
+                    // Base map first (streets/coastlines), radar echoes on top:
+                    // RainViewer tiles are transparent outside precipitation.
+                    Bitmap base = fetchBitmap(ctx,
+                            "https://tile.openstreetmap.org/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + ".png",
+                            "SureWeatherWidget/1.0 (contact: widget)");
+                    if (base != null) {
+                        cv.drawBitmap(base, dx * 256, dy * 256, paint);
+                        base.recycle();
+                    }
                     Bitmap tile = fetchBitmap(ctx, host + path + "/256/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + "/2/1_1.png");
                     if (tile == null) return null;
                     cv.drawBitmap(tile, dx * 256, dy * 256, paint);
@@ -310,9 +322,15 @@ public class WeatherWidget extends AppWidgetProvider {
     }
 
     static Bitmap fetchBitmap(Context ctx, String url) {
+        return fetchBitmap(ctx, url, "SureWeatherWidget/1.0");
+    }
+
+    static Bitmap fetchBitmap(Context ctx, String url, String userAgent) {
         HttpURLConnection c = null;
         try {
             c = openConn(ctx, url);
+            // OpenStreetMap tiles require a valid User-Agent (usage policy).
+            c.setRequestProperty("User-Agent", userAgent);
             if (c.getResponseCode() != 200) return null;
             return android.graphics.BitmapFactory.decodeStream(c.getInputStream());
         } catch (Exception e) {
