@@ -37,6 +37,39 @@ public class WeatherWidget extends AppWidgetProvider {
 
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
     static final String ACTION_REFRESH = "com.sureweather.app.WIDGET_REFRESH";
+    static final String TAG = "SureWidget";
+
+    /** System HTTP proxy (emulator -http-proxy, corporate proxies): plain
+     * HttpURLConnection does NOT always follow the APN proxy, so read the
+     * global setting explicitly. Returns NO_PROXY when unset/unparseable. */
+    static java.net.Proxy systemProxy(Context ctx) {
+        try {
+            String hp = android.provider.Settings.Global.getString(
+                    ctx.getContentResolver(), android.provider.Settings.Global.HTTP_PROXY);
+            if (hp == null || hp.isEmpty()) return java.net.Proxy.NO_PROXY;
+            String host = hp;
+            int port = 8080;
+            int colon = hp.lastIndexOf(':');
+            if (colon >= 0) {
+                host = hp.substring(0, colon);
+                try { port = Integer.parseInt(hp.substring(colon + 1)); } catch (NumberFormatException e) { port = 8080; }
+            }
+            if (host.isEmpty()) return java.net.Proxy.NO_PROXY;
+            android.util.Log.d(TAG, "using proxy " + host + ":" + port);
+            return new java.net.Proxy(java.net.Proxy.Type.HTTP,
+                    new java.net.InetSocketAddress(host, port));
+        } catch (Exception e) {
+            return java.net.Proxy.NO_PROXY;
+        }
+    }
+
+    static HttpURLConnection openConn(Context ctx, String url) throws Exception {
+        java.net.Proxy proxy = systemProxy(ctx);
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection(proxy);
+        c.setConnectTimeout(12000);
+        c.setReadTimeout(12000);
+        return c;
+    }
 
     @Override
     public void onUpdate(Context context, AppWidgetManager manager, int[] ids) {
@@ -95,13 +128,12 @@ public class WeatherWidget extends AppWidgetProvider {
             int[] hCode = new int[0];
             double[] hProb = new double[0];
             try {
-                URL url = new URL("https://api.open-meteo.com/v1/forecast?latitude=" + fLat
+                android.util.Log.d(TAG, "refresh lat=" + fLat + " lon=" + fLon);
+                HttpURLConnection c = openConn(context,
+                        "https://api.open-meteo.com/v1/forecast?latitude=" + fLat
                         + "&longitude=" + fLon
                         + "&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability"
                         + "&timezone=auto&forecast_days=2");
-                HttpURLConnection c = (HttpURLConnection) url.openConnection();
-                c.setConnectTimeout(12000);
-                c.setReadTimeout(12000);
                 try {
                     if (c.getResponseCode() == 200) {
                         BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream()));
@@ -148,6 +180,7 @@ public class WeatherWidget extends AppWidgetProvider {
                     c.disconnect();
                 }
             } catch (Exception e) {
+                android.util.Log.w(TAG, "forecast fetch failed: " + e);
                 // Keep previous values (or placeholders on first run).
             }
             String when;
@@ -200,7 +233,7 @@ public class WeatherWidget extends AppWidgetProvider {
             // Mini rain MAP (RainViewer tiles around the place). Falls back
             // to the probability bars when the tile service is unreachable.
             try {
-                Bitmap map = rainMap(fLat, fLon);
+                Bitmap map = rainMap(context, fLat, fLon);
                 if (map != null) v.setImageViewBitmap(R.id.widget_rain, map);
                 else v.setImageViewBitmap(R.id.widget_rain, rainBitmap(hProb, hTime));
             } catch (Exception e) {
@@ -214,13 +247,11 @@ public class WeatherWidget extends AppWidgetProvider {
 
     /** Mini rain map: 2×2 RainViewer tiles around the place, cropped square
      * centered on it. Returns null when the tile service is unreachable. */
-    static Bitmap rainMap(double lat, double lon) {
+    static Bitmap rainMap(Context ctx, double lat, double lon) {
         HttpURLConnection c = null;
         try {
             // Latest radar frame index.
-            c = (HttpURLConnection) new URL("https://api.rainviewer.com/public/weather-maps.json").openConnection();
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(10000);
+            c = openConn(ctx, "https://api.rainviewer.com/public/weather-maps.json");
             String idx = readAll(c);
             if (idx == null) return null;
             JSONObject root = new JSONObject(idx);
@@ -243,7 +274,7 @@ public class WeatherWidget extends AppWidgetProvider {
             Paint paint = new Paint();
             for (int dx = 0; dx < 2; dx++) {
                 for (int dy = 0; dy < 2; dy++) {
-                    Bitmap tile = fetchBitmap(host + path + "/256/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + "/2/1_1.png");
+                    Bitmap tile = fetchBitmap(ctx, host + path + "/256/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + "/2/1_1.png");
                     if (tile == null) return null;
                     cv.drawBitmap(tile, dx * 256, dy * 256, paint);
                     tile.recycle();
@@ -278,12 +309,10 @@ public class WeatherWidget extends AppWidgetProvider {
         }
     }
 
-    static Bitmap fetchBitmap(String url) {
+    static Bitmap fetchBitmap(Context ctx, String url) {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(10000);
+            c = openConn(ctx, url);
             if (c.getResponseCode() != 200) return null;
             return android.graphics.BitmapFactory.decodeStream(c.getInputStream());
         } catch (Exception e) {
