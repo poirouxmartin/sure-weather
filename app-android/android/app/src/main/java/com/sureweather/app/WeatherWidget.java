@@ -36,11 +36,28 @@ import android.view.View;
 public class WeatherWidget extends AppWidgetProvider {
 
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
+    static final String ACTION_REFRESH = "com.sureweather.app.WIDGET_REFRESH";
 
     @Override
     public void onUpdate(Context context, AppWidgetManager manager, int[] ids) {
         for (int id : ids) {
             refresh(context, manager, id);
+        }
+    }
+
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        // Tap on ⟳ : refresh every instance now (no 30-min wait).
+        if (ACTION_REFRESH.equals(intent != null ? intent.getAction() : null)) {
+            try {
+                AppWidgetManager manager = AppWidgetManager.getInstance(context);
+                android.content.ComponentName self =
+                        new android.content.ComponentName(context, WeatherWidget.class);
+                for (int id : manager.getAppWidgetIds(self)) {
+                    refresh(context, manager, id);
+                }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -62,8 +79,12 @@ public class WeatherWidget extends AppWidgetProvider {
         open.setAction("com.sureweather.app.OPEN_FROM_WIDGET");
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent tap = PendingIntent.getActivity(context, appWidgetId, open, flags);
+        Intent doRefresh = new Intent(context, WeatherWidget.class);
+        doRefresh.setAction(ACTION_REFRESH);
+        PendingIntent tapRefresh = PendingIntent.getBroadcast(context, appWidgetId, doRefresh, flags);
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_weather);
         views.setOnClickPendingIntent(R.id.widget_root, tap);
+        views.setOnClickPendingIntent(R.id.widget_refresh, tapRefresh);
         views.setTextViewText(R.id.widget_city, fName);
         manager.updateAppWidget(appWidgetId, views);
 
@@ -140,6 +161,7 @@ public class WeatherWidget extends AppWidgetProvider {
             }
             RemoteViews v = new RemoteViews(context.getPackageName(), R.layout.widget_weather);
             v.setOnClickPendingIntent(R.id.widget_root, tap);
+            v.setOnClickPendingIntent(R.id.widget_refresh, tapRefresh);
             v.setTextViewText(R.id.widget_city, fName);
             v.setTextViewText(R.id.widget_temp, temp);
             v.setTextViewText(R.id.widget_icon, icon);
@@ -161,14 +183,114 @@ public class WeatherWidget extends AppWidgetProvider {
                     v.setViewVisibility(idsBox[i], View.GONE);
                 }
             }
-            // Mini rain radar: next-12h precipitation-probability bars.
+            // Next rain sentence ("Pluie ~15h" / "Sec 12h").
             try {
-                v.setImageViewBitmap(R.id.widget_rain, rainBitmap(hProb, hTime));
+                String rainTxt = "";
+                if (hTime.length > 1) {
+                    rainTxt = "Sec 12h";
+                    for (int i = 1; i < Math.min(hTime.length, 12); i++) {
+                        if (i < hProb.length && hProb[i] >= 50 && hTime[i] != null && hTime[i].length() >= 13) {
+                            rainTxt = "Pluie ~" + hTime[i].substring(11, 13) + "h";
+                            break;
+                        }
+                    }
+                }
+                v.setTextViewText(R.id.widget_rain_when, rainTxt);
             } catch (Exception ignored) {}
+            // Mini rain MAP (RainViewer tiles around the place). Falls back
+            // to the probability bars when the tile service is unreachable.
+            try {
+                Bitmap map = rainMap(fLat, fLon);
+                if (map != null) v.setImageViewBitmap(R.id.widget_rain, map);
+                else v.setImageViewBitmap(R.id.widget_rain, rainBitmap(hProb, hTime));
+            } catch (Exception e) {
+                try { v.setImageViewBitmap(R.id.widget_rain, rainBitmap(hProb, hTime)); } catch (Exception ignored) {}
+            }
             try {
                 manager.updateAppWidget(appWidgetId, v);
             } catch (Exception ignored) {}
         });
+    }
+
+    /** Mini rain map: 2×2 RainViewer tiles around the place, cropped square
+     * centered on it. Returns null when the tile service is unreachable. */
+    static Bitmap rainMap(double lat, double lon) {
+        HttpURLConnection c = null;
+        try {
+            // Latest radar frame index.
+            c = (HttpURLConnection) new URL("https://api.rainviewer.com/public/weather-maps.json").openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(10000);
+            String idx = readAll(c);
+            if (idx == null) return null;
+            JSONObject root = new JSONObject(idx);
+            String host = root.optString("host", "");
+            JSONArray past = root.optJSONObject("radar") != null
+                    ? root.optJSONObject("radar").optJSONArray("past") : null;
+            if (host.isEmpty() || past == null || past.length() == 0) return null;
+            String path = past.getJSONObject(past.length() - 1).optString("path", "");
+            if (path.isEmpty()) return null;
+            // Slippy tiles at z7 around the place (2×2 stitched, center crop).
+            int z = 7;
+            double n = Math.pow(2, z);
+            double fx = (lon + 180.0) / 360.0 * n;
+            double latR = Math.toRadians(lat);
+            double fy = (1.0 - Math.log(Math.tan(latR) + 1.0 / Math.cos(latR)) / Math.PI) / 2.0 * n;
+            int x0 = (int) Math.floor(fx - 0.5);
+            int y0 = (int) Math.floor(fy - 0.5);
+            Bitmap stitched = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888);
+            Canvas cv = new Canvas(stitched);
+            Paint paint = new Paint();
+            for (int dx = 0; dx < 2; dx++) {
+                for (int dy = 0; dy < 2; dy++) {
+                    Bitmap tile = fetchBitmap(host + path + "/256/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + "/2/1_1.png");
+                    if (tile == null) return null;
+                    cv.drawBitmap(tile, dx * 256, dy * 256, paint);
+                    tile.recycle();
+                }
+            }
+            // Centered 320×320 crop on the exact place.
+            int px = (int) ((fx - x0) * 256);
+            int py = (int) ((fy - y0) * 256);
+            int left = Math.max(0, Math.min(512 - 320, px - 160));
+            int top = Math.max(0, Math.min(512 - 320, py - 160));
+            Bitmap crop = Bitmap.createBitmap(stitched, left, top, 320, 320);
+            stitched.recycle();
+            return crop;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    static String readAll(HttpURLConnection c) {
+        try {
+            if (c.getResponseCode() != 200) return null;
+            BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static Bitmap fetchBitmap(String url) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(10000);
+            if (c.getResponseCode() != 200) return null;
+            return android.graphics.BitmapFactory.decodeStream(c.getInputStream());
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     /** 12-bar precipitation-probability chart drawn on a Bitmap. */

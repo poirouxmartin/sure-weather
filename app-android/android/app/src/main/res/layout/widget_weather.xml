@@ -32,7 +32,18 @@
             android:layout_height="wrap_content"
             android:text=""
             android:textSize="11sp"
-            android:textColor="#9FB3CC" />
+            android:textColor="#9FB3CC"
+            android:layout_marginEnd="4dp" />
+
+        <TextView
+            android:id="@+id/widget_refresh"
+            android:layout_width="30dp"
+            android:layout_height="30dp"
+            android:text="⟳"
+            android:textSize="17sp"
+            android:textColor="#D7E3F4"
+            android:gravity="center"
+            android:background="@drawable/widget_chip" />
     </LinearLayout>
 
     <!-- Maintenant -->
@@ -113,19 +124,35 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Mini radar de pluie : probas 12 prochaines heures -->
-    <TextView
-        android:id="@+id/widget_rain_label"
-        android:layout_width="wrap_content"
+    <!-- Mini carte radar de pluie (tuiles RainViewer autour du lieu) -->
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Pluie 12h"
-        android:textSize="11sp"
-        android:textColor="#9FB3CC"
-        android:layout_marginTop="6dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp">
+
+        <TextView
+            android:id="@+id/widget_rain_label"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Radar pluie"
+            android:textSize="11sp"
+            android:textColor="#9FB3CC" />
+
+        <TextView
+            android:id="@+id/widget_rain_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="11sp"
+            android:textColor="#D7E3F4" />
+    </LinearLayout>
 
     <ImageView
         android:id="@+id/widget_rain"
         android:layout_width="match_parent"
-        android:layout_height="46dp"
-        android:scaleType="fitXY" />
+        android:layout_height="110dp"
+        android:scaleType="centerCrop" />
 </LinearLayout>
