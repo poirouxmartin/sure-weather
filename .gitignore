@@ -19,6 +19,7 @@ app-android/android/*
 !app-android/android/app
 app-android/android/app/*
 !app-android/android/app/src
+!app-android/android/app/build.gradle
 app-android/android/app/src/*
 !app-android/android/app/src/main
 app-android/android/app/src/main/*
