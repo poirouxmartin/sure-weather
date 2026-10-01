@@ -127,9 +127,30 @@ window.SureLocal = (() => {
   function forecastUrl(lat, lon, models) {
     return (
       `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
-      `&hourly=${HOURLY.join(",")}&daily=sunrise,sunset&models=${models.join(",")}` +
+      `&hourly=${HOURLY.join(",")}&minutely_15=precipitation&daily=sunrise,sunset&models=${models.join(",")}` +
       `&forecast_days=7&past_days=1&wind_speed_unit=ms&timezone=UTC`
     );
+  }
+  /* Rain timing at 15-min precision: median precipitation across models per
+     quarter hour. Returns {start,end} ISO or nulls. */
+  function rainTiming(data, modelsOk) {
+    const m15 = data.minutely_15 || {};
+    const times = m15.time || [];
+    if (!times.length) return { start: null, end: null };
+    const nowMs = Date.now();
+    const series = modelsOk.map((m) => m15[`precipitation_${m}`] || m15.precipitation || []);
+    let start = null, end = null;
+    for (let i = 0; i < times.length; i++) {
+      const vt = new Date(times[i] + "Z").getTime();
+      if (vt < nowMs - 15 * 60e3) continue;
+      const vals = series.map((s) => s[i]).filter((v) => v !== null && v !== undefined && Number.isFinite(v));
+      if (!vals.length) continue;
+      const wet = median(vals) > 0.15;
+      if (wet && !start) start = new Date(vt).toISOString();
+      if (!wet && start && !end) { end = new Date(vt).toISOString(); break; }
+      if (start && vt - new Date(start).getTime() > 12 * 3600e3) break;
+    }
+    return { start, end };
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function fetchJson(url, signal, what) {
@@ -301,6 +322,10 @@ window.SureLocal = (() => {
       const b0 = bTimes.find((t) => new Date(t).getTime() >= now.getTime() - 30 * 60e3) || bTimes[0];
       const breakdown = [...(breakdownByTime[b0] || [])].sort((a, b) => b.weight - a.weight);
       const flat = Math.round(lat / 0.1) * 0.1, flon = Math.round(lon / 0.1) * 0.1;
+      let rain = { start: null, end: null };
+      try {
+        rain = rainTiming(data, perModel.map((p) => p.model));
+      } catch { /* rain timing is a bonus */ }
       // Feed the learner AFTER render (never on the critical path: the
       // stringify + localStorage write of ~2 MB would ANR slow phones).
       try {
@@ -325,6 +350,7 @@ window.SureLocal = (() => {
         partial: perModel.length < 3, // fewer than 3 models: degraded consensus
         breakdown,
         breakdown_valid_at: b0 ? new Date(b0).toISOString() : null,
+        rain,
         sun: { daily: sun },
         local: true,
         models_ok: perModel.map((p) => p.model),
@@ -467,5 +493,5 @@ window.SureLocal = (() => {
     return { points };
   }
 
-  return { MODELS, LAYER_VARS, forecast, geocodeNominatim, radar, windGrid, modelGrid, lutColor };
+  return { MODELS, LAYER_VARS, forecast, geocodeNominatim, radar, windGrid, modelGrid, lutColor, rainTiming };
 })();

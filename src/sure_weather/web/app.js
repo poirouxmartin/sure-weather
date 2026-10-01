@@ -1103,6 +1103,18 @@ function renderVerdict(times, byTime) {
       `<span class="vpill vpill--rain"><span class="vpill__ic" aria-hidden="true">☔</span>${tr(first.t === times[0] ? "v_rain_now" : "v_rain", { h: fmtTime(first.t) })}${peak >= 70 ? ` · ${Math.round(peak)}%` : ""}</span>`
     );
   }
+  // Precise rain timing (15-min model consensus, standalone payload).
+  try {
+    const rs = currentData?.rain?.start ? new Date(currentData.rain.start).getTime() : null;
+    const re = currentData?.rain?.end ? new Date(currentData.rain.end).getTime() : null;
+    const nowMs = Date.now();
+    if (rs && rs - nowMs > 5 * 60e3 && rs - nowMs < 12 * 3600e3) {
+      const mins = Math.round((rs - nowMs) / 60e3);
+      const when = mins < 60 ? tr("v_rain_in_min", { m: mins }) : tr("v_rain_in_h", { h: fmtTime(new Date(rs).toISOString()) });
+      const until = re && re > rs ? ` → ${fmtTime(new Date(re).toISOString())}` : "";
+      pills.push(`<span class="vpill vpill--rain"><span class="vpill__ic" aria-hidden="true">🌧️</span>${when}${until}</span>`);
+    }
+  } catch { /* bonus pill */ }
   // Temperature: max & min with hour of max.
   const temps = rows.map((h) => h.row.temperature_2m?.value).filter((v) => v !== null && v !== undefined);
   if (temps.length) {

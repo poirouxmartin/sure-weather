@@ -123,6 +123,7 @@ public class WeatherWidget extends AppWidgetProvider {
 
         POOL.execute(() -> {
             String temp = "--", icon = "\u2601\uFE0F", desc = "";
+            String minStart = null; // "14:35" of next rain at 15-min precision
             String[] hTime = new String[0];
             double[] hTemp = new double[0];
             int[] hCode = new int[0];
@@ -133,7 +134,7 @@ public class WeatherWidget extends AppWidgetProvider {
                         "https://api.open-meteo.com/v1/forecast?latitude=" + fLat
                         + "&longitude=" + fLon
                         + "&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability"
-                        + "&timezone=auto&forecast_days=2");
+                        + "&minutely_15=precipitation&timezone=auto&forecast_days=2");
                 try {
                     if (c.getResponseCode() == 200) {
                         BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream()));
@@ -149,6 +150,42 @@ public class WeatherWidget extends AppWidgetProvider {
                         String[] cond = conditionFor(code);
                         icon = cond[0];
                         desc = cond[1];
+                        // 15-min rain start (best single-model series available).
+                        try {
+                            JSONObject m15 = root.optJSONObject("minutely_15");
+                            if (m15 != null) {
+                                JSONArray mt = m15.optJSONArray("time");
+                                JSONArray mp = null;
+                                if (m15.has("precipitation")) mp = m15.optJSONArray("precipitation");
+                                else {
+                                    java.util.Iterator<String> ks = m15.keys();
+                                    while (ks.hasNext()) {
+                                        String k = ks.next();
+                                        if (k.startsWith("precipitation_")) { mp = m15.optJSONArray(k); break; }
+                                    }
+                                }
+                                if (mt != null && mp != null) {
+                                    long nowMs = System.currentTimeMillis();
+                                    // timezone=auto returns location-local ISO (no
+                                    // suffix): parse/display in device tz (exact
+                                    // when both match, the widget's case).
+                                    java.text.SimpleDateFormat inFmt =
+                                            new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US);
+                                    for (int i = 0; i < Math.min(mt.length(), 48); i++) {
+                                        try {
+                                            long qt = inFmt.parse(mt.optString(i, "")).getTime();
+                                            if (qt < nowMs - 15 * 60 * 1000) continue;
+                                            if (mp.optDouble(i, 0) > 0.15) {
+                                                java.text.SimpleDateFormat hf =
+                                                        new java.text.SimpleDateFormat("HH:mm", Locale.getDefault());
+                                                minStart = hf.format(new Date(qt));
+                                                break;
+                                            }
+                                        } catch (Exception ignored) {}
+                                    }
+                                }
+                            }
+                        } catch (Exception ignored) {}
                         JSONObject hourly = root.optJSONObject("hourly");
                         if (hourly != null) {
                             JSONArray times = hourly.optJSONArray("time");
@@ -216,10 +253,13 @@ public class WeatherWidget extends AppWidgetProvider {
                     v.setViewVisibility(idsBox[i], View.GONE);
                 }
             }
-            // Next rain sentence ("Pluie ~15h" / "Sec 12h").
+            // Next rain sentence: 15-min precision when available
+            // ("Pluie 14:35"), else hourly fallback ("Pluie ~15h" / "Sec 12h").
             try {
                 String rainTxt = "";
-                if (hTime.length > 1) {
+                if (minStart != null) {
+                    rainTxt = "Pluie " + minStart;
+                } else if (hTime.length > 1) {
                     rainTxt = "Sec 12h";
                     for (int i = 1; i < Math.min(hTime.length, 12); i++) {
                         if (i < hProb.length && hProb[i] >= 50 && hTime[i] != null && hTime[i].length() >= 13) {
