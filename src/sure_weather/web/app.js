@@ -634,6 +634,44 @@ function showSkeletons(name) {
 const forceLocal = new URLSearchParams(location.search).get("local") === "1";
 let backendDown = forceLocal;
 
+/* App version bundled here — bump on every GitHub release so the in-app
+   updater can offer it. Checked against api.github.com (CORS-open). */
+const APP_VERSION = "1.1.0";
+const APP_REPO = "poirouxmartin/sure-weather";
+
+function cmpVersions(a, b) {
+  const pa = String(a).replace(/^v/, "").split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = String(b).replace(/^v/, "").split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+async function checkAppUpdate() {
+  try {
+    const last = parseInt(localStorage.getItem("sure-weather-update-check") || "0", 10);
+    if (Date.now() - last < 24 * 3600e3) return; // once a day max
+    localStorage.setItem("sure-weather-update-check", String(Date.now()));
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(`https://api.github.com/repos/${APP_REPO}/releases/latest`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const rel = await r.json();
+    const tag = (rel.tag_name || "").replace(/^v/, "");
+    if (!tag || cmpVersions(tag, APP_VERSION) <= 0) return;
+    const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name || ""));
+    const banner = document.getElementById("update-banner");
+    if (!banner) return;
+    banner.href = (apk && apk.browser_download_url) || rel.html_url || `https://github.com/${APP_REPO}/releases`;
+    banner.target = "_blank";
+    banner.rel = "noopener";
+    banner.hidden = false;
+    banner.innerHTML = `<span aria-hidden="true">⬆️</span> ${escHtml(tr("update_available", { v: rel.tag_name }))} — ${escHtml(tr("update_download"))}`;
+  } catch { /* update check is best-effort */ }
+}
+
 /* True when the backend is really absent (not just slow): network errors,
    aborts, non-JSON bodies (Capacitor's SPA fallback serves index.html with
    HTTP 200 for unknown paths — a bare r.ok check would false-positive). */
@@ -2091,6 +2129,7 @@ if (forceLocal) initLocalModeUI();
 else probeBackend().finally(() => { if (backendDown) initLocalModeUI(); });
 loadForecast();
 renderFavorites();
+checkAppUpdate();
 // The map and radar initialize inside render(), once `#content` is visible:
 // Leaflet needs a non-zero container to fetch tiles (no gray map).
 // Home-screen shortcut "?geo=1": ask for geolocation once on boot.

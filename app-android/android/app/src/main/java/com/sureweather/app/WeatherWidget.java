@@ -128,13 +128,16 @@ public class WeatherWidget extends AppWidgetProvider {
             double[] hTemp = new double[0];
             int[] hCode = new int[0];
             double[] hProb = new double[0];
+            double[] hWind = new double[0];
+            int[] hWdir = new int[0];
+            double[] hPress = new double[0];
             try {
                 android.util.Log.d(TAG, "refresh lat=" + fLat + " lon=" + fLon);
                 HttpURLConnection c = openConn(context,
                         "https://api.open-meteo.com/v1/forecast?latitude=" + fLat
                         + "&longitude=" + fLon
-                        + "&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability"
-                        + "&minutely_15=precipitation&timezone=auto&forecast_days=2");
+                        + "&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability,wind_speed_10m,wind_direction_10m,pressure_msl"
+                        + "&minutely_15=precipitation&wind_speed_unit=ms&timezone=auto&forecast_days=2");
                 try {
                     if (c.getResponseCode() == 200) {
                         BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream()));
@@ -192,6 +195,9 @@ public class WeatherWidget extends AppWidgetProvider {
                             JSONArray temps = hourly.optJSONArray("temperature_2m");
                             JSONArray codes = hourly.optJSONArray("weather_code");
                             JSONArray probs = hourly.optJSONArray("precipitation_probability");
+                            JSONArray winds = hourly.optJSONArray("wind_speed_10m");
+                            JSONArray wdirs = hourly.optJSONArray("wind_direction_10m");
+                            JSONArray press = hourly.optJSONArray("pressure_msl");
                             String nowPrefix = cur.optString("time", "").substring(0, Math.min(13, cur.optString("time", "").length()));
                             int start = 0;
                             if (times != null) {
@@ -204,11 +210,17 @@ public class WeatherWidget extends AppWidgetProvider {
                                 hTemp = new double[count];
                                 hCode = new int[count];
                                 hProb = new double[count];
+                                hWind = new double[count];
+                                hWdir = new int[count];
+                                hPress = new double[count];
                                 for (int i = 0; i < count; i++) {
                                     hTime[i] = times.optString(start + i, "");
                                     hTemp[i] = temps != null ? temps.optDouble(start + i, Double.NaN) : Double.NaN;
                                     hCode[i] = codes != null ? codes.optInt(start + i, 3) : 3;
                                     hProb[i] = probs != null ? probs.optDouble(start + i, 0) : 0;
+                                    hWind[i] = winds != null ? winds.optDouble(start + i, Double.NaN) : Double.NaN;
+                                    hWdir[i] = wdirs != null ? wdirs.optInt(start + i, -1) : -1;
+                                    hPress[i] = press != null ? press.optDouble(start + i, Double.NaN) : Double.NaN;
                                 }
                             }
                         }
@@ -241,7 +253,11 @@ public class WeatherWidget extends AppWidgetProvider {
             int[] idsTime = {R.id.h0_time, R.id.h1_time, R.id.h2_time, R.id.h3_time, R.id.h4_time, R.id.h5_time};
             int[] idsIcon = {R.id.h0_icon, R.id.h1_icon, R.id.h2_icon, R.id.h3_icon, R.id.h4_icon, R.id.h5_icon};
             int[] idsTemp = {R.id.h0_temp, R.id.h1_temp, R.id.h2_temp, R.id.h3_temp, R.id.h4_temp, R.id.h5_temp};
+            int[] idsRain = {R.id.h0_rain, R.id.h1_rain, R.id.h2_rain, R.id.h3_rain, R.id.h4_rain, R.id.h5_rain};
+            int[] idsWind = {R.id.h0_wind, R.id.h1_wind, R.id.h2_wind, R.id.h3_wind, R.id.h4_wind, R.id.h5_wind};
+            int[] idsPress = {R.id.h0_press, R.id.h1_press, R.id.h2_press, R.id.h3_press, R.id.h4_press, R.id.h5_press};
             int[] idsBox = {R.id.h0, R.id.h1, R.id.h2, R.id.h3, R.id.h4, R.id.h5};
+            String[] arrows = {"\u2191", "\u2197", "\u2192", "\u2198", "\u2193", "\u2199", "\u2190", "\u2196"};
             for (int i = 0; i < 6; i++) {
                 int h = i + 1;
                 if (h < hTime.length && hTime[h] != null && hTime[h].length() >= 13 && !Double.isNaN(hTemp[h])) {
@@ -249,6 +265,17 @@ public class WeatherWidget extends AppWidgetProvider {
                     v.setTextViewText(idsTime[i], hTime[h].substring(11, 13) + "h");
                     v.setTextViewText(idsIcon[i], conditionFor(hCode[h])[0]);
                     v.setTextViewText(idsTemp[i], String.valueOf(Math.round(hTemp[h])) + "\u00B0");
+                    v.setTextViewText(idsRain[i], h < hProb.length ? "\uD83D\uDCA7" + Math.round(hProb[h]) + "%" : "");
+                    String wTxt = "";
+                    if (h < hWind.length && !Double.isNaN(hWind[h])) {
+                        String ar = "";
+                        if (h < hWdir.length && hWdir[h] >= 0) {
+                            ar = arrows[((int) Math.round((((hWdir[h] + 180) % 360) / 45.0))) % 8];
+                        }
+                        wTxt = ar + Math.round(hWind[h] * 3.6);
+                    }
+                    v.setTextViewText(idsWind[i], wTxt);
+                    v.setTextViewText(idsPress[i], h < hPress.length && !Double.isNaN(hPress[h]) ? String.valueOf(Math.round(hPress[h])) : "");
                 } else {
                     v.setViewVisibility(idsBox[i], View.GONE);
                 }
@@ -289,7 +316,9 @@ public class WeatherWidget extends AppWidgetProvider {
     }
 
     /** Mini rain map: 2×2 RainViewer tiles around the place, cropped square
-     * centered on it. Returns null when the tile service is unreachable. */
+     * centered on it. Zooms to z8 and cycles through recent frames (one per
+     * refresh slot) with the frame time stamped on the bitmap — a slow
+     * animation across updates. Returns null when unreachable. */
     static Bitmap rainMap(Context ctx, double lat, double lon) {
         HttpURLConnection c = null;
         try {
@@ -302,10 +331,14 @@ public class WeatherWidget extends AppWidgetProvider {
             JSONArray past = root.optJSONObject("radar") != null
                     ? root.optJSONObject("radar").optJSONArray("past") : null;
             if (host.isEmpty() || past == null || past.length() == 0) return null;
-            String path = past.getJSONObject(past.length() - 1).optString("path", "");
+            // Animation: a different recent frame every 30-min refresh slot.
+            int slot = (int) ((System.currentTimeMillis() / 1800000) % past.length());
+            JSONObject frame = past.getJSONObject(slot);
+            String path = frame.optString("path", "");
+            long frameTime = frame.optLong("time", 0) * 1000;
             if (path.isEmpty()) return null;
-            // Slippy tiles at z7 around the place (2×2 stitched, center crop).
-            int z = 7;
+            // Slippy tiles at z8 around the place (2×2 stitched, center crop).
+            int z = 8;
             double n = Math.pow(2, z);
             double fx = (lon + 180.0) / 360.0 * n;
             double latR = Math.toRadians(lat);
@@ -339,6 +372,25 @@ public class WeatherWidget extends AppWidgetProvider {
             int top = Math.max(0, Math.min(512 - 320, py - 160));
             Bitmap crop = Bitmap.createBitmap(stitched, left, top, 320, 320);
             stitched.recycle();
+            // Live frame timestamp stamped on the map ("Radar 14:35").
+            if (frameTime > 0) {
+                try {
+                    Canvas cc = new Canvas(crop);
+                    Paint tp = new Paint();
+                    tp.setColor(0xFFFFFFFF);
+                    tp.setTextSize(30f);
+                    tp.setShadowLayer(4f, 2f, 2f, 0xCC000000);
+                    String label;
+                    try {
+                        java.text.SimpleDateFormat hf =
+                                new java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault());
+                        label = "Radar " + hf.format(new Date(frameTime));
+                    } catch (Exception e) {
+                        label = "";
+                    }
+                    cc.drawText(label, 12f, 308f, tp);
+                } catch (Exception ignored) {}
+            }
             return crop;
         } catch (Exception e) {
             return null;
