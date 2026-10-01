@@ -635,8 +635,11 @@ const forceLocal = new URLSearchParams(location.search).get("local") === "1";
 let backendDown = forceLocal;
 
 /* App version bundled here — bump on every GitHub release so the in-app
-   updater can offer it. Checked against api.github.com (CORS-open). */
-const APP_VERSION = "1.2.0";
+   updater can offer it. ALSO bump VERSION (repo root), versionCode and
+   versionName: the release asset must be named sure-weather-vX.Y.Z.apk.
+   Checked against a raw VERSION file (no rate-limit, CORS-open) — the
+   api.github.com endpoint is unusable (60 req/h/IP, shared mobile NATs). */
+const APP_VERSION = "1.2.1";
 const APP_REPO = "poirouxmartin/sure-weather";
 
 function cmpVersions(a, b) {
@@ -650,26 +653,31 @@ function cmpVersions(a, b) {
 
 async function checkAppUpdate() {
   try {
-    const last = parseInt(localStorage.getItem("sure-weather-update-check") || "0", 10);
-    if (Date.now() - last < 24 * 3600e3) return; // once a day max
-    localStorage.setItem("sure-weather-update-check", String(Date.now()));
+    // Throttle on the last SUCCESSFUL check only: a failed check (offline,
+    // rate-limited) retries on next launch instead of staying silent 24h.
+    const lastOk = parseInt(localStorage.getItem("sure-weather-update-ok") || "0", 10);
+    const lastFail = parseInt(localStorage.getItem("sure-weather-update-fail") || "0", 10);
+    if (Date.now() - lastOk < 24 * 3600e3) return; // once a day max
+    if (Date.now() - lastFail < 3600e3) return; // retry failures hourly
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const r = await fetch(`https://api.github.com/repos/${APP_REPO}/releases/latest`, { signal: ctrl.signal });
+    const r = await fetch(`https://raw.githubusercontent.com/${APP_REPO}/master/VERSION`, { signal: ctrl.signal, cache: "no-store" });
     clearTimeout(t);
-    if (!r.ok) return;
-    const rel = await r.json();
-    const tag = (rel.tag_name || "").replace(/^v/, "");
+    if (!r.ok) throw new Error(`VERSION ${r.status}`);
+    const tag = (await r.text()).trim().replace(/^v/, "");
+    localStorage.setItem("sure-weather-update-ok", String(Date.now()));
     if (!tag || cmpVersions(tag, APP_VERSION) <= 0) return;
-    const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name || ""));
     const banner = document.getElementById("update-banner");
     if (!banner) return;
-    banner.href = (apk && apk.browser_download_url) || rel.html_url || `https://github.com/${APP_REPO}/releases`;
+    banner.href = `https://github.com/${APP_REPO}/releases/download/v${tag}/sure-weather-v${tag}.apk`;
     banner.target = "_blank";
     banner.rel = "noopener";
     banner.hidden = false;
-    banner.innerHTML = `<span aria-hidden="true">⬆️</span> ${escHtml(tr("update_available", { v: rel.tag_name }))} — ${escHtml(tr("update_download"))}`;
-  } catch { /* update check is best-effort */ }
+    banner.innerHTML = `<span aria-hidden="true">⬆️</span> ${escHtml(tr("update_available", { v: "v" + tag }))} — ${escHtml(tr("update_download"))}`;
+  } catch (e) {
+    // Best-effort: remember the failure briefly, retry on next launch.
+    try { localStorage.setItem("sure-weather-update-fail", String(Date.now())); } catch {}
+  }
 }
 
 /* True when the backend is really absent (not just slow): network errors,
@@ -941,7 +949,7 @@ function render(data, hours = state.hours) {
     models: shown,
     st: stationCount,
     u: new Date(data.generated_at).toLocaleTimeString(LANG === "en" ? "en-GB" : "fr-FR"),
-  });
+  }) + ` · v${APP_VERSION}`;
   footerEl.title = `${tr("sources_full")}: ${modelNames.join(", ")} | ${stationNames.join(", ")}`;
   centerMapOn(state.lat, state.lon, state.name);
   loadRadar();
