@@ -337,8 +337,11 @@ public class WeatherWidget extends AppWidgetProvider {
             String path = frame.optString("path", "");
             long frameTime = frame.optLong("time", 0) * 1000;
             if (path.isEmpty()) return null;
-            // Slippy tiles at z8 around the place (2×2 stitched, center crop).
-            int z = 8;
+            // Slippy tiles at z9 around the place (2×2 stitched ≈ 100 km,
+            // center crop ≈ 60 km). RainViewer only serves radar up to z7:
+            // those are upsampled ×4 over the sharp z9 street map, exactly
+            // like the web app does (the radar's true resolution is coarse).
+            int z = 9;
             double n = Math.pow(2, z);
             double fx = (lon + 180.0) / 360.0 * n;
             double latR = Math.toRadians(lat);
@@ -350,8 +353,7 @@ public class WeatherWidget extends AppWidgetProvider {
             Paint paint = new Paint();
             for (int dx = 0; dx < 2; dx++) {
                 for (int dy = 0; dy < 2; dy++) {
-                    // Base map first (streets/coastlines), radar echoes on top:
-                    // RainViewer tiles are transparent outside precipitation.
+                    // Base map first (streets/coastlines at full z9 detail).
                     Bitmap base = fetchBitmap(ctx,
                             "https://tile.openstreetmap.org/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + ".png",
                             "SureWeatherWidget/1.0 (contact: widget)");
@@ -359,11 +361,16 @@ public class WeatherWidget extends AppWidgetProvider {
                         cv.drawBitmap(base, dx * 256, dy * 256, paint);
                         base.recycle();
                     }
-                    Bitmap tile = fetchBitmap(ctx, host + path + "/256/" + z + "/" + (x0 + dx) + "/" + (y0 + dy) + "/2/1_1.png");
-                    if (tile == null) return null;
-                    cv.drawBitmap(tile, dx * 256, dy * 256, paint);
-                    tile.recycle();
                 }
+            }
+            // Radar echoes upsampled from z7 over the sharp map. RainViewer
+            // tiles are transparent outside precipitation.
+            Bitmap radar = rainRadarUpsampled(ctx, host, path, x0, y0);
+            if (radar != null) {
+                Paint smooth = new Paint();
+                smooth.setFilterBitmap(true);
+                cv.drawBitmap(radar, 0, 0, smooth);
+                radar.recycle();
             }
             // Centered 320×320 crop on the exact place.
             int px = (int) ((fx - x0) * 256);
@@ -388,7 +395,7 @@ public class WeatherWidget extends AppWidgetProvider {
                     } catch (Exception e) {
                         label = "";
                     }
-                    cc.drawText(label, 12f, 308f, tp);
+                    cc.drawText(label, 12f, 34f, tp);
                 } catch (Exception ignored) {}
             }
             return crop;
@@ -396,6 +403,40 @@ public class WeatherWidget extends AppWidgetProvider {
             return null;
         } finally {
             if (c != null) c.disconnect();
+        }
+    }
+
+    /** Radar layer for a z9 2×2 zone, sampled at z7 (the finest the radar
+     * serves) and upscaled ×4 with bilinear filtering. 1 px at z7 = 4 px
+     * at z9; the wanted 512 px zone = a 128 px window in z7 pixels. */
+    static Bitmap rainRadarUpsampled(Context ctx, String host, String path, int x0, int y0) {
+        try {
+            int xa = x0 / 4, xb = (x0 + 1) / 4;
+            int ya = y0 / 4, yb = (y0 + 1) / 4;
+            int nx = xb - xa + 1, ny = yb - ya + 1;
+            Bitmap sheet = Bitmap.createBitmap(nx * 256, ny * 256, Bitmap.Config.ARGB_8888);
+            Canvas cv = new Canvas(sheet);
+            Paint paint = new Paint();
+            for (int tx = xa; tx <= xb; tx++) {
+                for (int ty = ya; ty <= yb; ty++) {
+                    Bitmap tile = fetchBitmap(ctx,
+                            host + path + "/256/7/" + tx + "/" + ty + "/2/1_1_0.png");
+                    if (tile == null) { sheet.recycle(); return null; }
+                    cv.drawBitmap(tile, (tx - xa) * 256, (ty - ya) * 256, paint);
+                    tile.recycle();
+                }
+            }
+            int cx = x0 * 64 - xa * 256;
+            int cy = y0 * 64 - ya * 256;
+            cx = Math.max(0, Math.min(sheet.getWidth() - 128, cx));
+            cy = Math.max(0, Math.min(sheet.getHeight() - 128, cy));
+            Bitmap window = Bitmap.createBitmap(sheet, cx, cy, 128, 128);
+            sheet.recycle();
+            Bitmap up = Bitmap.createScaledBitmap(window, 512, 512, true);
+            window.recycle();
+            return up;
+        } catch (Exception e) {
+            return null;
         }
     }
 

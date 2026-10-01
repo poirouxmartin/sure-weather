@@ -636,7 +636,7 @@ let backendDown = forceLocal;
 
 /* App version bundled here — bump on every GitHub release so the in-app
    updater can offer it. Checked against api.github.com (CORS-open). */
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const APP_REPO = "poirouxmartin/sure-weather";
 
 function cmpVersions(a, b) {
