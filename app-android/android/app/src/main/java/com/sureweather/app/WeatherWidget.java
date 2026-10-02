@@ -331,17 +331,23 @@ public class WeatherWidget extends AppWidgetProvider {
             JSONArray past = root.optJSONObject("radar") != null
                     ? root.optJSONObject("radar").optJSONArray("past") : null;
             if (host.isEmpty() || past == null || past.length() == 0) return null;
-            // Animation: a different recent frame every 30-min refresh slot.
-            int slot = (int) ((System.currentTimeMillis() / 1800000) % past.length());
-            JSONObject frame = past.getJSONObject(slot);
+            // Animation over past AND forecast (nowcast) frames: a different
+            // frame every 30-min refresh slot, so the map visibly moves.
+            JSONArray cast = root.optJSONObject("radar") != null
+                    ? root.optJSONObject("radar").optJSONArray("nowcast") : null;
+            int total = past.length() + (cast != null ? cast.length() : 0);
+            if (total == 0) return null;
+            int slot = (int) ((System.currentTimeMillis() / 1800000) % total);
+            JSONObject frame = slot < past.length()
+                    ? past.getJSONObject(slot) : cast.getJSONObject(slot - past.length());
             String path = frame.optString("path", "");
             long frameTime = frame.optLong("time", 0) * 1000;
             if (path.isEmpty()) return null;
-            // Slippy tiles at z9 around the place (2×2 stitched ≈ 100 km,
-            // center crop ≈ 60 km). RainViewer only serves radar up to z7:
-            // those are upsampled ×4 over the sharp z9 street map, exactly
+            // Slippy tiles at z10 around the place (city scale: 2×2 ≈ 50 km,
+            // center crop ≈ 30 km). RainViewer only serves radar up to z7:
+            // those are upsampled ×8 over the sharp z10 street map, exactly
             // like the web app does (the radar's true resolution is coarse).
-            int z = 9;
+            int z = 10;
             double n = Math.pow(2, z);
             double fx = (lon + 180.0) / 360.0 * n;
             double latR = Math.toRadians(lat);
@@ -406,13 +412,16 @@ public class WeatherWidget extends AppWidgetProvider {
         }
     }
 
-    /** Radar layer for a z9 2×2 zone, sampled at z7 (the finest the radar
-     * serves) and upscaled ×4 with bilinear filtering. 1 px at z7 = 4 px
-     * at z9; the wanted 512 px zone = a 128 px window in z7 pixels. */
+    /** Radar layer for a z10 2×2 zone, sampled at z7 (the finest the radar
+     * serves) and upscaled ×8 with bilinear filtering. 1 px at z7 = 8 px
+     * at z10; the wanted 512 px zone = a 64 px window in z7 pixels. */
     static Bitmap rainRadarUpsampled(Context ctx, String host, String path, int x0, int y0) {
         try {
-            int xa = x0 / 4, xb = (x0 + 1) / 4;
-            int ya = y0 / 4, yb = (y0 + 1) / 4;
+            final int F = 8; // 2^(10-7): z10 px per z7 px
+            final int WIN = 512 / F; // 64 px window in z7 pixels
+            // Parent z7 tiles covering the z10 zone (integer division = floor).
+            int xa = x0 / F, xb = (x0 + 1) / F;
+            int ya = y0 / F, yb = (y0 + 1) / F;
             int nx = xb - xa + 1, ny = yb - ya + 1;
             Bitmap sheet = Bitmap.createBitmap(nx * 256, ny * 256, Bitmap.Config.ARGB_8888);
             Canvas cv = new Canvas(sheet);
@@ -426,11 +435,11 @@ public class WeatherWidget extends AppWidgetProvider {
                     tile.recycle();
                 }
             }
-            int cx = x0 * 64 - xa * 256;
-            int cy = y0 * 64 - ya * 256;
-            cx = Math.max(0, Math.min(sheet.getWidth() - 128, cx));
-            cy = Math.max(0, Math.min(sheet.getHeight() - 128, cy));
-            Bitmap window = Bitmap.createBitmap(sheet, cx, cy, 128, 128);
+            int cx = (x0 * 256 / F) - xa * 256;
+            int cy = (y0 * 256 / F) - ya * 256;
+            cx = Math.max(0, Math.min(sheet.getWidth() - WIN, cx));
+            cy = Math.max(0, Math.min(sheet.getHeight() - WIN, cy));
+            Bitmap window = Bitmap.createBitmap(sheet, cx, cy, WIN, WIN);
             sheet.recycle();
             Bitmap up = Bitmap.createScaledBitmap(window, 512, 512, true);
             window.recycle();

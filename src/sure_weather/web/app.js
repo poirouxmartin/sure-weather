@@ -639,7 +639,7 @@ let backendDown = forceLocal;
    versionName: the release asset must be named sure-weather-vX.Y.Z.apk.
    Checked against a raw VERSION file (no rate-limit, CORS-open) — the
    api.github.com endpoint is unusable (60 req/h/IP, shared mobile NATs). */
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.3.0";
 const APP_REPO = "poirouxmartin/sure-weather";
 
 function cmpVersions(a, b) {
