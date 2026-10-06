@@ -2,7 +2,7 @@
 
 Multi-source weather fusion with per-provider confidence, targeting hyperlocal nowcasts and 7-day forecasts.
 
-Project page: [martinpoiroux.com/en/projects/sure-weather](https://martinpoiroux.com/en/projects/sure-weather/)
+Project page: [martinpoiroux.com/projets/sure-weather/](https://martinpoiroux.com/projets/sure-weather/)
 
 ## Concept
 
