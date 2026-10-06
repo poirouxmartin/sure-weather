@@ -1,6 +1,8 @@
 # sure-weather
 
-Multi-source weather fusion with per-provider confidence, targeting hyperlocal nowcasts and J+7 forecasts.
+Multi-source weather fusion with per-provider confidence, targeting hyperlocal nowcasts and 7-day forecasts.
+
+Project page: [martinpoiroux.com/en/projects/sure-weather](https://martinpoiroux.com/en/projects/sure-weather/)
 
 ## Concept
 
@@ -48,11 +50,15 @@ uvicorn sure_weather.api:app
 
 ## Status
 
-- [x] Zero-key collection (Open-Meteo forecast + era5 archive)
+- [x] Zero-key collection (Open-Meteo forecast + ERA5 archive, METAR observations)
 - [x] Cell grid, storage, residuals, bias learning
 - [x] Robust fusion with per-provider confidence
-- [x] Multi-model providers (GFS, ECMWF, ICON, MetNo, ARPEGE) weighted by learned rmse
-- [ ] Local station providers (Netatmo / PWS / OpenWeatherMap)
+- [x] Multi-model providers (GFS, ECMWF, ICON, MetNo, ARPEGE) weighted by learned RMSE
+- [x] Installable PWA served by the API (radar, wind grid, push notifications)
+- [x] Android shell with a home-screen widget and in-app updates (APK in Releases)
+- [ ] Local station providers (Netatmo / PWS)
 - [ ] Temporal blending (stations dominate short-term, models long-term)
-- [ ] Nowcast radar / lightning
-- [ ] Frontend (PWA)
+
+## License
+
+MIT
